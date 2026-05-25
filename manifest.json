@@ -2,8 +2,8 @@
   "manifest_version": "0.3",
   "name": "macos-mcp-server",
   "version": "0.1.0",
-  "description": "",
-  "author": { "name": "" },
+  "description": "Control macOS system settings, apps, windows, audio, displays, screenshots, and Focus mode via MCP. STDIO or Streamable HTTP.",
+  "author": { "name": "cyanheads" },
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",
@@ -22,5 +22,18 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "MACOS_SCREENSHOT_DIR": {
+      "title": "Screenshot Directory",
+      "description": "Default directory for screenshot files. Defaults to ~/Desktop when empty.",
+      "type": "string",
+      "required": false
+    },
+    "MACOS_DISPLAY_LAYOUTS": {
+      "title": "Display Layouts",
+      "description": "JSON object mapping layout names to displayplacer argument strings for apply_layout.",
+      "type": "string",
+      "required": false
+    }
+  }
 }

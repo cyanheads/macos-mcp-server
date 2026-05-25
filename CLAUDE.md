@@ -11,19 +11,6 @@
 
 ---
 
-## First Session
-
-This project was just scaffolded with `bunx @cyanheads/mcp-ts-core init`. The framework, skills, and example definitions are in place — the domain isn't. The user's first messages will set direction; wait for them before proceeding.
-
-> **Remove this section** from CLAUDE.md / AGENTS.md after completing these steps. The skills and conventions below remain — this block is one-time onboarding only.
-
-1. **Get your bearings.** Take stock of the project tree, the skills in `skills/`, and the tools/MCP servers available. Light tool use is fine for context-building — you're mapping the territory, not committing yet.
-2. **Read the framework docs** — `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` (builders, Context, errors, exports, conventions)
-3. **Run the `setup` skill** — read `skills/setup/SKILL.md` and follow its checklist (project orientation, agent protocol file selection, echo definition cleanup, skill sync)
-4. **Design the server** — read `skills/design-mcp-server/SKILL.md` and work through it with the user to map the domain into tools, resources, and services before scaffolding
-
----
-
 ## What's Next?
 
 When the user asks what's next or needs direction, suggest options based on the current project state. Common next steps:
@@ -60,36 +47,36 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
-  annotations: { readOnlyHint: true },
+export const macosControlAppearance = tool('macos_control_appearance', {
+  description: 'Get or set the system appearance (dark mode or light mode).',
+  annotations: { readOnlyHint: false, openWorldHint: false },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    action: z.enum(['get', 'set']).describe('get returns current; set applies the mode.'),
+    mode: z.enum(['dark', 'light', 'toggle']).optional().describe('Required for action=set.'),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    dark_mode: z.boolean().describe('True when dark mode is currently active.'),
   }),
-  auth: ['inventory:read'],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const osascript = getOsascriptService();
+    if (input.action === 'set') {
+      // ... set logic ...
+    }
+    const { stdout } = await osascript.runAppleScript(
+      'tell application "System Events" to tell appearance preferences to return dark mode',
+      ctx,
+    );
+    const dark_mode = stdout.trim() === 'true';
+    ctx.log.info('macos_control_appearance', { action: input.action, dark_mode });
+    return { dark_mode };
   },
 
-  // format() populates content[] — the markdown twin of structuredContent.
-  // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
-  format: (result) => [{
-    type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
-  }],
+  format: (result) => [
+    { type: 'text', text: `**Appearance:** ${result.dark_mode ? 'Dark mode' : 'Light mode'}` },
+  ],
 });
 ```
 
@@ -97,34 +84,22 @@ export const searchItems = tool('search_items', {
 
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { getSystemInfoService } from '@/services/system-info/system-info-service.js';
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
-  },
-});
-```
-
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
+export const macosSystemInfoResource = resource('macos://system/info', {
+  name: 'macos-system-info',
+  description: 'Current macOS system snapshot: battery, power source, Wi-Fi SSID, hostname, version, uptime, display count.',
+  mimeType: 'application/json',
+  params: z.object({}),
+  output: z.object({
+    hostname: z.string().describe('Machine hostname.'),
+    macos_version: z.string().describe('macOS version string.'),
+    uptime_seconds: z.number().describe('Seconds since last boot.'),
+    display_count: z.number().describe('Number of connected displays.'),
   }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
-  ],
+  async handler(_params, ctx) {
+    return getSystemInfoService().getSystemInfo(ctx);
+  },
 });
 ```
 
@@ -136,21 +111,21 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
-  apiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
+  screenshotDir: z.string().default('').describe('Default directory for screenshot files.'),
+  displayLayouts: z.string().default('{}').describe('JSON object mapping layout names to displayplacer args.'),
 });
 
-let _config: z.infer<typeof ServerConfigSchema> | undefined;
+let _config: ReturnType<typeof ServerConfigSchema.parse> | undefined;
 export function getServerConfig() {
   _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'MY_API_KEY',
-    maxResults: 'MY_MAX_RESULTS',
+    screenshotDir: 'MACOS_SCREENSHOT_DIR',
+    displayLayouts: 'MACOS_DISPLAY_LAYOUTS',
   });
   return _config;
 }
 ```
 
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
+`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MACOS_SCREENSHOT_DIR`) not the path (`screenshotDir`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
 
 ---
 
@@ -219,18 +194,23 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 src/
   index.ts                              # createApp() entry point
   config/
-    server-config.ts                    # Server-specific env vars (Zod schema)
+    server-config.ts                    # MACOS_SCREENSHOT_DIR, MACOS_DISPLAY_LAYOUTS
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    audio/
+      audio-service.ts                  # SwitchAudioSource device listing and switching
+    display/
+      display-service.ts                # displayplacer list and apply-layout
+    osascript/
+      osascript-service.ts              # osascript JXA + AppleScript runner with timeout
+    screencapture/
+      screencapture-service.ts          # screencapture + sips PNG/JPEG capture
+    system-info/
+      system-info-service.ts            # battery, Wi-Fi, hostname, uptime via system_profiler/pmset
   mcp-server/
     tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
+      macos-*.tool.ts                   # 13 tool definitions (one per file)
     resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
+      macos-*.resource.ts               # 3 resource definitions
 ```
 
 ---
@@ -384,7 +364,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 
 // Server's own code — via path alias
-import { getMyService } from '@/services/my-domain/my-service.js';
+import { getOsascriptService } from '@/services/osascript/osascript-service.js';
+import { getAudioService } from '@/services/audio/audio-service.js';
+import { getDisplayService } from '@/services/display/display-service.js';
+import { getScreencaptureService } from '@/services/screencapture/screencapture-service.js';
+import { getSystemInfoService } from '@/services/system-info/system-info-service.js';
+import { getServerConfig } from '@/config/server-config.js';
 ```
 
 ---

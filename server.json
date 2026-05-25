@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "cyanheads/macos-mcp-server",
-  "description": "MCP server providing macOS system integration tools.",
+  "name": "io.github.cyanheads/macos-mcp-server",
+  "description": "Control macOS system settings, apps, windows, audio, displays, screenshots, and Focus mode via MCP.",
   "repository": {
     "url": "https://github.com/cyanheads/macos-mcp-server",
     "source": "github"
@@ -11,7 +11,7 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "macos-mcp-server",
+      "identifier": "@cyanheads/macos-mcp-server",
       "runtimeHint": "node",
       "version": "0.1.0",
       "packageArguments": [
@@ -26,8 +26,22 @@
       ],
       "environmentVariables": [
         {
+          "name": "MACOS_SCREENSHOT_DIR",
+          "description": "Default directory for screenshot files. Defaults to ~/Desktop when empty.",
+          "format": "string",
+          "isRequired": false,
+          "default": ""
+        },
+        {
+          "name": "MACOS_DISPLAY_LAYOUTS",
+          "description": "JSON object mapping layout names to displayplacer argument strings for apply_layout.",
+          "format": "string",
+          "isRequired": false,
+          "default": "{}"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
-          "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
+          "description": "Minimum log level for output: debug, info, notice, warning, error.",
           "format": "string",
           "isRequired": false,
           "default": "info"
@@ -40,7 +54,7 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "macos-mcp-server",
+      "identifier": "@cyanheads/macos-mcp-server",
       "runtimeHint": "node",
       "version": "0.1.0",
       "packageArguments": [
@@ -54,6 +68,20 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "MACOS_SCREENSHOT_DIR",
+          "description": "Default directory for screenshot files. Defaults to ~/Desktop when empty.",
+          "format": "string",
+          "isRequired": false,
+          "default": ""
+        },
+        {
+          "name": "MACOS_DISPLAY_LAYOUTS",
+          "description": "JSON object mapping layout names to displayplacer argument strings for apply_layout.",
+          "format": "string",
+          "isRequired": false,
+          "default": "{}"
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",
@@ -77,14 +105,14 @@
         },
         {
           "name": "MCP_AUTH_MODE",
-          "description": "Authentication mode to use: 'none', 'jwt', or 'oauth'.",
+          "description": "Authentication mode: none, jwt, or oauth.",
           "format": "string",
           "isRequired": false,
           "default": "none"
         },
         {
           "name": "MCP_LOG_LEVEL",
-          "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
+          "description": "Minimum log level for output: debug, info, notice, warning, error.",
           "format": "string",
           "isRequired": false,
           "default": "info"
