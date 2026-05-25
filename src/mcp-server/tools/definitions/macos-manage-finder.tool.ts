@@ -136,7 +136,22 @@ export const macosManageFinder = tool('macos_manage_finder', {
         if (!path) throw ctx.fail('path_not_found', 'path is required for reveal');
         if (!path.startsWith('/'))
           throw ctx.fail('path_not_found', `Path "${path}" must be absolute`);
-        await execFile('open', ['-R', path], { timeout: 10_000 });
+        try {
+          await execFile('open', ['-R', path], { timeout: 10_000 });
+        } catch (err: unknown) {
+          const e = err as { message?: string; stderr?: string };
+          const msg = (e.stderr ?? e.message ?? '').toLowerCase();
+          if (
+            msg.includes('no such file') ||
+            msg.includes('does not exist') ||
+            msg.includes('unable to find')
+          ) {
+            throw ctx.fail('path_not_found', `Path "${path}" does not exist.`, {
+              recovery: { hint: 'Verify the path exists. Use absolute paths starting with /.' },
+            });
+          }
+          throw err;
+        }
         return { action: 'reveal', success: true, path };
       }
 

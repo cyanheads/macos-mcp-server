@@ -11,6 +11,13 @@ vi.mock('@/services/osascript/osascript-service.js', () => ({
   initOsascriptService: vi.fn(),
 }));
 
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: null) => void) => {
+    cb(null);
+    return { pid: 1 };
+  }),
+}));
+
 import { macosManageFinder } from '@/mcp-server/tools/definitions/macos-manage-finder.tool.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 
@@ -157,5 +164,26 @@ describe('macosManageFinder', () => {
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
     expect(text).toContain('/a.txt');
     expect(text).toContain('2');
+  });
+
+  it('reveal throws path_not_found (not raw command) when open rejects with "no such file"', async () => {
+    const { execFile: mockExecFile } = await import('node:child_process');
+    vi.mocked(mockExecFile).mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null) => void) => {
+        cb(
+          Object.assign(new Error('Command failed: open -R /nonexistent/path'), {
+            stderr: 'no such file or directory',
+          }),
+        );
+        return { pid: 1 } as never;
+      },
+    );
+    const ctx = createMockContext({ errors: macosManageFinder.errors });
+    const err = await macosManageFinder
+      .handler(macosManageFinder.input.parse({ action: 'reveal', path: '/nonexistent/path' }), ctx)
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'path_not_found' } });
+    expect((err as Error).message).not.toContain('open -R');
+    expect((err as Error).message).not.toContain('Command failed');
   });
 });

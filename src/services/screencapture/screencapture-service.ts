@@ -169,7 +169,25 @@ export class ScreencaptureService {
       case 'display': {
         // Use screencapture display selection — index is 1-based for screencapture
         const idx = (opts.displayIndex ?? 0) + 1;
-        await execFile('screencapture', ['-x', `-D${idx}`, outputPath], { timeout: 30_000 });
+        try {
+          await execFile('screencapture', ['-x', `-D${idx}`, outputPath], { timeout: 30_000 });
+        } catch (err: unknown) {
+          const e = err as { message?: string; stderr?: string };
+          const msg = (e.stderr ?? e.message ?? '').toLowerCase();
+          if (msg.includes('invalid display') || msg.includes('must be a number')) {
+            throw new McpError(
+              JsonRpcErrorCode.NotFound,
+              `Display index ${opts.displayIndex ?? 0} is not available.`,
+              {
+                reason: 'display_not_found',
+                recovery: {
+                  hint: 'Call macos_manage_displays with action=list to see available displays.',
+                },
+              },
+            );
+          }
+          throw err;
+        }
         break;
       }
 
@@ -196,7 +214,8 @@ export class ScreencaptureService {
           );
         }
 
-        // Get CGWindowID for the app's frontmost window using JXA
+        // Get CGWindowID for the app's frontmost window using JXA.
+        // ObjC.deepUnwrap is broken on macOS 26.1 — use ObjC.castRefToObject + objectForKey instead.
         const escapedApp = JSON.stringify(opts.appName);
         const windowIdResult = await execFile(
           'osascript',
@@ -206,12 +225,15 @@ export class ScreencaptureService {
             '-e',
             `
             ObjC.import('CoreGraphics');
+            ObjC.import('Foundation');
             const winList = $.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, $.kCGNullWindowID);
             const count = $.CFArrayGetCount(winList);
             for (let i = 0; i < count; i++) {
-              const info = ObjC.deepUnwrap($.CFArrayGetValueAtIndex(winList, i));
-              if (info.kCGWindowOwnerName === ${escapedApp} && info.kCGWindowLayer === 0) {
-                info.kCGWindowNumber.toString();
+              const dict = ObjC.castRefToObject($.CFArrayGetValueAtIndex(winList, i));
+              const owner = ObjC.unwrap(dict.objectForKey('kCGWindowOwnerName'));
+              const layer = ObjC.unwrap(dict.objectForKey('kCGWindowLayer'));
+              if (owner === ${escapedApp} && layer === 0) {
+                ObjC.unwrap(dict.objectForKey('kCGWindowNumber')).toString();
                 break;
               }
             }

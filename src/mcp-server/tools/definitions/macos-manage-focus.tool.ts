@@ -145,22 +145,33 @@ export const macosManageFocus = tool('macos_manage_focus', {
         timeout: 15_000,
       });
     } catch (err: unknown) {
-      const e = err as { code?: string | number; message?: string; stderr?: string };
-      const msg = e.message ?? e.stderr ?? '';
+      const e = err as {
+        code?: string | number;
+        message?: string;
+        stderr?: string;
+        killed?: boolean;
+      };
+      const msg = (e.message ?? e.stderr ?? '').toLowerCase();
 
-      if (e.code === 'ENOENT' || msg.includes('not found')) {
+      if (e.code === 'ENOENT') {
         throw ctx.fail('shortcuts_unavailable', 'shortcuts CLI not found at /usr/bin/shortcuts');
       }
-      if (msg.includes('not found') || msg.includes('not a shortcut') || msg.includes('error:')) {
-        if (msg.toLowerCase().includes('set focus')) {
-          throw ctx.fail(
-            'shortcuts_unavailable',
-            'The "Set Focus" shortcut is not installed in the Shortcuts app',
-          );
-        }
-        throw ctx.fail('focus_not_found', `Focus mode "${mode}" not found: ${msg}`);
+      if (
+        msg.includes('not a shortcut') ||
+        msg.includes('no shortcut') ||
+        msg.includes('shortcut not found')
+      ) {
+        throw ctx.fail(
+          'shortcuts_unavailable',
+          'The "Set Focus" shortcut is not installed in the Shortcuts app',
+        );
       }
-      throw err;
+      // Any other failure (including timeout on unknown mode or general exit) is a mode name mismatch
+      throw ctx.fail('focus_not_found', `Focus mode "${mode}" was not found.`, {
+        recovery: {
+          hint: 'Check System Settings > Focus for configured profile names. Names are case-sensitive.',
+        },
+      });
     }
 
     ctx.log.info('macos_manage_focus set', { mode, enabled });

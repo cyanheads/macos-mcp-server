@@ -252,4 +252,26 @@ describe('macosManageApps', () => {
     expect(text).toContain('200');
     expect(text).toContain('My Page');
   });
+
+  it('launch throws app_not_found (not raw command) when open rejects with "unable to find application"', async () => {
+    const { execFile: mockExecFile } = await import('node:child_process');
+    vi.mocked(mockExecFile).mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null) => void) => {
+        cb(
+          Object.assign(new Error('Command failed: open -a DoesNotExist'), {
+            stderr: "unable to find application named 'DoesNotExist'",
+          }),
+        );
+        return { pid: 1 } as never;
+      },
+    );
+    const ctx = createMockContext({ errors: macosManageApps.errors });
+    const err = await macosManageApps
+      .handler(macosManageApps.input.parse({ action: 'launch', app_name: 'DoesNotExist' }), ctx)
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'app_not_found' } });
+    // Error message must not expose the raw CLI command
+    expect((err as Error).message).not.toContain('open -a');
+    expect((err as Error).message).not.toContain('Command failed');
+  });
 });

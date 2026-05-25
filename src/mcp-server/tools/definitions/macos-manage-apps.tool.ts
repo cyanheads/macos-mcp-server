@@ -191,7 +191,25 @@ export const macosManageApps = tool('macos_manage_apps', {
         } else {
           launchArgs.push('-a', input.app_name!);
         }
-        await execFile('open', launchArgs, { timeout: 15_000 });
+        try {
+          await execFile('open', launchArgs, { timeout: 15_000 });
+        } catch (err: unknown) {
+          const e = err as { message?: string; stderr?: string };
+          const msg = (e.stderr ?? e.message ?? '').toLowerCase();
+          if (
+            msg.includes('unable to find application') ||
+            msg.includes('no such application') ||
+            msg.includes('not found')
+          ) {
+            const target = input.app_name ?? input.bundle_id ?? 'unknown';
+            throw ctx.fail('app_not_found', `Application "${target}" was not found.`, {
+              recovery: {
+                hint: 'Check the spelling and try again. Use action=list to see running apps.',
+              },
+            });
+          }
+          throw err;
+        }
         const name = input.app_name ?? input.bundle_id ?? 'unknown';
         ctx.log.info('macos_manage_apps launch', { app: name });
         return { action: 'launch', success: true, app_name: name };
