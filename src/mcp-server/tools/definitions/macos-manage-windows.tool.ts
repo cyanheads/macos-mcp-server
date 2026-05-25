@@ -94,22 +94,9 @@ export const macosManageWindows = tool('macos_manage_windows', {
     const osascript = getOsascriptService();
 
     if (input.action === 'list') {
-      const { stdout } = await osascript.runJxa(
+      /** Enumerate windows first, THEN get screen frames — concurrent AppKit + System Events osascript causes "Can't convert types" errors. */
+      const winResult = await osascript.runJxa(
         `
-          ObjC.import('AppKit');
-          const screens = $.NSScreen.screens;
-          const primaryH = screens.objectAtIndex(0).frame.size.height;
-          const sf = [];
-          for (let si = 0; si < screens.count; si++) {
-            const f = screens.objectAtIndex(si).frame;
-            sf.push({x: f.origin.x, y: primaryH - f.origin.y - f.size.height, w: f.size.width, h: f.size.height});
-          }
-          function displayOf(wx, wy) {
-            for (let i = 0; i < sf.length; i++) {
-              if (wx >= sf[i].x && wx < sf[i].x + sf[i].w && wy >= sf[i].y && wy < sf[i].y + sf[i].h) return i;
-            }
-            return 0;
-          }
           const se = Application("System Events");
           const result = [];
           const procs = se.processes.whose({backgroundOnly: false})();
@@ -120,13 +107,14 @@ export const macosManageWindows = tool('macos_manage_windows', {
                 try {
                   const pos = win.position();
                   const sz = win.size();
+                  let minimized = false;
+                  try { minimized = win.minimized(); } catch(e) {}
                   result.push({
                     app: proc.name(),
                     title: win.name(),
                     x: pos[0], y: pos[1],
                     width: sz[0], height: sz[1],
-                    minimized: win.minimized(),
-                    display_index: displayOf(pos[0], pos[1])
+                    minimized: minimized
                   });
                 } catch(e) {}
               }
@@ -136,7 +124,16 @@ export const macosManageWindows = tool('macos_manage_windows', {
         `,
         ctx,
       );
-      const windows: WindowInfo[] = JSON.parse(stdout || '[]');
+
+      const screenFrames = await getScreenFrames(osascript, ctx);
+      const rawWindows = JSON.parse(winResult.stdout || '[]') as Array<
+        Omit<WindowInfo, 'display_index'>
+      >;
+      const windows: WindowInfo[] = rawWindows.map((w) => ({
+        ...w,
+        display_index: resolveDisplayIndex(w.x, w.y, screenFrames),
+      }));
+
       return { action: 'list', windows };
     }
 
@@ -293,13 +290,10 @@ function buildFindWindowScript(appName?: string, windowTitle?: string): string {
   return `throw new Error("window_not_found: no target specified");`;
 }
 
-async function getWindowState(
+async function getScreenFrames(
   osascript: ReturnType<typeof getOsascriptService>,
-  appName: string | undefined,
-  windowTitle: string | undefined,
   ctx: Parameters<typeof osascript.runJxa>[1],
-): Promise<WindowInfo | null> {
-  const findScript = buildFindWindowScript(appName, windowTitle);
+): Promise<Array<{ x: number; y: number; w: number; h: number }>> {
   try {
     const { stdout } = await osascript.runJxa(
       `
@@ -311,35 +305,67 @@ async function getWindowState(
           const f = screens.objectAtIndex(si).frame;
           sf.push({x: f.origin.x, y: primaryH - f.origin.y - f.size.height, w: f.size.width, h: f.size.height});
         }
-        function displayOf(wx, wy) {
-          for (let i = 0; i < sf.length; i++) {
-            if (wx >= sf[i].x && wx < sf[i].x + sf[i].w && wy >= sf[i].y && wy < sf[i].y + sf[i].h) return i;
-          }
-          return 0;
-        }
-        ${findScript}
-        const pos = win.position();
-        const sz = win.size();
-        const se2 = Application("System Events");
-        let appNameResult = "unknown";
-        for (const proc of se2.processes.whose({backgroundOnly: false})()) {
-          try {
-            const ww = proc.windows.whose({name: win.name()})();
-            if (ww.length > 0) { appNameResult = proc.name(); break; }
-          } catch(e) {}
-        }
-        JSON.stringify({
-          app: appNameResult,
-          title: win.name(),
-          x: pos[0], y: pos[1],
-          width: sz[0], height: sz[1],
-          minimized: win.minimized(),
-          display_index: displayOf(pos[0], pos[1])
-        });
+        JSON.stringify(sf);
       `,
       ctx,
     );
-    return JSON.parse(stdout || 'null') as WindowInfo | null;
+    return JSON.parse(stdout || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function resolveDisplayIndex(
+  wx: number,
+  wy: number,
+  screenFrames: Array<{ x: number; y: number; w: number; h: number }>,
+): number {
+  for (let i = 0; i < screenFrames.length; i++) {
+    const s = screenFrames[i]!;
+    if (wx >= s.x && wx < s.x + s.w && wy >= s.y && wy < s.y + s.h) return i;
+  }
+  return 0;
+}
+
+async function getWindowState(
+  osascript: ReturnType<typeof getOsascriptService>,
+  appName: string | undefined,
+  windowTitle: string | undefined,
+  ctx: Parameters<typeof osascript.runJxa>[1],
+): Promise<WindowInfo | null> {
+  const findScript = buildFindWindowScript(appName, windowTitle);
+  try {
+    const [{ stdout }, screenFrames] = await Promise.all([
+      osascript.runJxa(
+        `
+          ${findScript}
+          const pos = win.position();
+          const sz = win.size();
+          const se2 = Application("System Events");
+          let appNameResult = "unknown";
+          for (const proc of se2.processes.whose({backgroundOnly: false})()) {
+            try {
+              const ww = proc.windows.whose({name: win.name()})();
+              if (ww.length > 0) { appNameResult = proc.name(); break; }
+            } catch(e) {}
+          }
+          let minimized = false;
+          try { minimized = win.minimized(); } catch(e) {}
+          JSON.stringify({
+            app: appNameResult,
+            title: win.name(),
+            x: pos[0], y: pos[1],
+            width: sz[0], height: sz[1],
+            minimized: minimized
+          });
+        `,
+        ctx,
+      ),
+      getScreenFrames(osascript, ctx),
+    ]);
+    const raw = JSON.parse(stdout || 'null') as Omit<WindowInfo, 'display_index'> | null;
+    if (!raw) return null;
+    return { ...raw, display_index: resolveDisplayIndex(raw.x, raw.y, screenFrames) };
   } catch {
     return null;
   }
