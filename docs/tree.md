@@ -1,6 +1,6 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-05-25 08:09:50
+Generated on: 2026-05-25 08:50:02
 
 ```text
 macos-mcp-server/
@@ -143,6 +143,7 @@ macos-mcp-server/
 │   ├── security/
 │   │   └── injection.test.ts
 │   ├── services/
+│   │   └── audio-service.test.ts
 │   └── tools/
 │       ├── macos-check-permissions.tool.test.ts
 │       ├── macos-control-appearance.tool.test.ts
