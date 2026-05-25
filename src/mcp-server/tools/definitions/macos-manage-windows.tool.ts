@@ -212,7 +212,20 @@ export const macosManageWindows = tool('macos_manage_windows', {
       }
       case 'minimize': {
         const minimized = input.minimized !== false;
-        await osascript.runJxa(`${findScript}; win.minimized = ${minimized};`, ctx);
+        /** win.minimized setter is broken on macOS 26.1 ("Can't convert types" -1700).
+         *  Clicking the AXMinimizeButton is equivalent and works on all supported versions. */
+        await osascript.runJxa(
+          `
+          ${findScript}
+          let isMinimized = false;
+          try { isMinimized = win.minimized(); } catch(e) {}
+          if (${minimized} !== isMinimized) {
+            const btns = win.buttons.whose({subrole: "AXMinimizeButton"})();
+            if (btns.length > 0) { btns[0].click(); }
+          }
+          `,
+          ctx,
+        );
         break;
       }
       case 'fullscreen': {

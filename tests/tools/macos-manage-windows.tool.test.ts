@@ -183,6 +183,21 @@ describe('macosManageWindows', () => {
     expect(result.success).toBe(true);
   });
 
+  it('minimize uses AXMinimizeButton click instead of direct setter', async () => {
+    const svc = makeOsascript(JSON.stringify(mockWindowState));
+    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
+    const ctx = createMockContext({ errors: macosManageWindows.errors });
+    await macosManageWindows.handler(
+      macosManageWindows.input.parse({ action: 'minimize', app_name: 'Safari', minimized: true }),
+      ctx,
+    );
+    const jxaCalls = svc.runJxa.mock.calls.map((c) => c[0] as string);
+    // Must use AXMinimizeButton click, not direct win.minimized = bool
+    const minimizeCall = jxaCalls.find((s) => s.includes('AXMinimizeButton'));
+    expect(minimizeCall).toBeDefined();
+    expect(jxaCalls.some((s) => s.includes('win.minimized ='))).toBe(false);
+  });
+
   it('fullscreen returns success', async () => {
     const svc = makeOsascript(JSON.stringify(mockWindowState));
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
