@@ -51,52 +51,32 @@ export class AudioService {
     ctx: Context,
     type: 'input' | 'output' | 'all' = 'all',
   ): Promise<AudioDevice[]> {
-    const allLines = await this.run(['-a', '-f', 'dict'], ctx);
-    const [currentOutput, currentInput] = await Promise.all([
+    const [allLines, currentOutput, currentInput] = await Promise.all([
+      this.run(['-a', '-f', 'json'], ctx),
       this.getCurrentDevice('output', ctx),
       this.getCurrentDevice('input', ctx),
     ]);
 
     /**
-     * -f dict output format: { "name" : "MacBook Air Microphone", "type" : "input" } per line.
-     * Falls back to plain list (-a only) if dict format returns nothing.
+     * -f json output format: one JSON object per line.
+     * {"name": "MacBook Pro Speakers", "type": "output", "id": "76", "uid": "..."}
      */
     const devices: AudioDevice[] = [];
     for (const line of allLines.split('\n').filter(Boolean)) {
       try {
-        // Try dict format: { "name" : "...", "type" : "input"|"output" }
-        const nameMatch = line.match(/"name"\s*:\s*"([^"]+)"/);
-        const typeMatch = line.match(/"type"\s*:\s*"(input|output)"/);
-        if (nameMatch && typeMatch) {
-          const name = nameMatch[1]!;
-          const devType = typeMatch[1] as 'input' | 'output';
-          if (type !== 'all' && devType !== type) continue;
-          devices.push({
-            id: name, // SwitchAudioSource uses name as the identifier
-            name,
-            type: devType,
-            is_default: devType === 'output' ? name === currentOutput : name === currentInput,
-          });
-        }
+        const entry = JSON.parse(line) as { name?: string; type?: string };
+        const name = entry.name;
+        const devType = entry.type;
+        if (!name || (devType !== 'input' && devType !== 'output')) continue;
+        if (type !== 'all' && devType !== type) continue;
+        devices.push({
+          id: name, // SwitchAudioSource uses name as the identifier
+          name,
+          type: devType,
+          is_default: devType === 'output' ? name === currentOutput : name === currentInput,
+        });
       } catch {
         // Skip malformed lines
-      }
-    }
-
-    // If dict format returned nothing, fall back to plain text (-a only)
-    if (devices.length === 0) {
-      const plainOut = await this.run(['-a'], ctx);
-      for (const line of plainOut.split('\n').filter(Boolean)) {
-        const name = line.trim();
-        if (!name) continue;
-        // We can't tell type from plain list — add as output by convention
-        if (type === 'input') continue; // Can't enumerate input-only in plain mode
-        devices.push({
-          id: name,
-          name,
-          type: 'output',
-          is_default: name === currentOutput,
-        });
       }
     }
 
