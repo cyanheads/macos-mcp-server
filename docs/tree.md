@@ -1,6 +1,6 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-05-25 08:02:37
+Generated on: 2026-05-25 08:09:50
 
 ```text
 macos-mcp-server/
@@ -170,6 +170,7 @@ macos-mcp-server/
 ├── LICENSE
 ├── manifest.json
 ├── package.json
+├── README.md
 ├── server.json
 ├── tsconfig.build.json
 ├── tsconfig.json
