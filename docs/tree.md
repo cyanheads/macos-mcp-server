@@ -1,15 +1,16 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-05-25 08:50:02
+Generated on: 2026-05-26 07:45:09
 
 ```text
 macos-mcp-server/
 ├── .claude/
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       ├── bug_report.yml
-│       ├── config.yml
-│       └── feature_request.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   └── FUNDING.yml
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -158,7 +159,6 @@ macos-mcp-server/
 │       ├── macos-manage-windows.tool.test.ts
 │       ├── macos-send-notification.tool.test.ts
 │       └── macos-take-screenshot.tool.test.ts
-├── .dockerignore
 ├── .env.example
 ├── .gitignore
 ├── .mcpbignore
@@ -167,7 +167,6 @@ macos-mcp-server/
 ├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
-├── Dockerfile
 ├── LICENSE
 ├── manifest.json
 ├── package.json
