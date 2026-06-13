@@ -91,7 +91,7 @@ export const macosManageApps = tool('macos_manage_apps', {
     },
     {
       reason: 'not_running',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.NotFound,
       when: 'quit, force_quit, hide, or show called on an app that is not running.',
       recovery: 'The app is not running. Use action=launch to start it first.',
     },

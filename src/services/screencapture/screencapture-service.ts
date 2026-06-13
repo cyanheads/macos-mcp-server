@@ -49,7 +49,7 @@ function validatePath(targetPath: string, screenshotDir: string): void {
   const isAllowed = allowed.some((dir) => resolved.startsWith(dir));
   if (!isAllowed) {
     throw new McpError(
-      JsonRpcErrorCode.InvalidParams,
+      JsonRpcErrorCode.ValidationError,
       `Path "${resolved}" is outside allowed screenshot directories.`,
       {
         reason: 'path_not_writable',
@@ -156,7 +156,7 @@ export class ScreencaptureService {
       case 'region': {
         if (!opts.region)
           throw new McpError(
-            JsonRpcErrorCode.InvalidParams,
+            JsonRpcErrorCode.ValidationError,
             'region is required for target=region',
           );
         const { x, y, width, height } = opts.region;
@@ -209,7 +209,7 @@ export class ScreencaptureService {
 
         if (!opts.appName) {
           throw new McpError(
-            JsonRpcErrorCode.InvalidParams,
+            JsonRpcErrorCode.ValidationError,
             'app_name is required for target=window',
           );
         }
@@ -264,7 +264,7 @@ export class ScreencaptureService {
       await stat(outputPath);
     } catch {
       throw new McpError(
-        JsonRpcErrorCode.InvalidParams,
+        JsonRpcErrorCode.ValidationError,
         `Screenshot was not written to "${outputPath}". The directory may not exist or not be writable.`,
         {
           reason: 'path_not_writable',

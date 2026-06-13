@@ -53,7 +53,7 @@ export const macosManageFinder = tool('macos_manage_finder', {
   errors: [
     {
       reason: 'finder_not_open',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.NotFound,
       when: 'frontmost_path or get_selection called but Finder has no open window.',
       recovery: 'Open a Finder window first, or use action=reveal with a path to open one.',
     },

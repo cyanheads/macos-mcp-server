@@ -92,7 +92,7 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
     },
     {
       reason: 'path_not_writable',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'The target path or MACOS_SCREENSHOT_DIR does not exist or is not writable.',
       recovery: 'Provide a writable absolute path, or ensure MACOS_SCREENSHOT_DIR exists.',
     },
