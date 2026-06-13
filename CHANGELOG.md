@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-06-12
+
+mcp-ts-core ^0.10.6 adoption, semantic error codes for tool failures, release/bundle tooling, plugin manifests
+
 ## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-05-26
 
 scripts migrated to bun run, funding config added, npm badge added, tsx removed
