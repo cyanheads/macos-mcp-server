@@ -4,7 +4,7 @@ description: >
   Design the tool surface, resources, and service layer for a new MCP server. Use when starting a new server, planning a major feature expansion, or when the user describes a domain/API they want to expose via MCP. Produces a design doc at docs/design.md that drives implementation.
 metadata:
   author: cyanheads
-  version: "2.11"
+  version: "2.18"
   audience: external
   type: workflow
 ---
@@ -28,6 +28,23 @@ Gather before designing. Ask the user if not obvious from context:
 4. **Scope constraints** — read-only? write access? admin operations? what's off-limits?
 
 If the domain has a public API, read its docs before designing. For internal-only servers, skip API research and go straight to user goals. Don't design from vibes either way.
+
+### Server scope and audience
+
+Before committing to a server boundary, answer: **what workflow does this server serve, and who is the audience?**
+
+The unit of a server is a *user workflow*, not an API. A single rich API can earn its own server when the audience is large and the API surface supports a full workflow (PubMed for literature research, SEC EDGAR for financial analysis, Shodan for internet-wide device intelligence). Multiple APIs should collapse into one server when they serve the same workflow from different angles — a "threat intelligence" server that aggregates VirusTotal, AbuseIPDB, and GreyNoise is more useful than three separate servers because the user's goal is "assess this indicator," not "query VirusTotal."
+
+**Don't default to one-API-one-server.** That's the right call when the API is deep enough and the audience is large enough, but it's not the starting point. The starting point is the workflow:
+
+| Signal | Server boundary |
+|:-------|:----------------|
+| Single API with rich surface, large audience | Standalone server named for the platform (`pubmed-mcp-server`, `secedgar-mcp-server`) |
+| Multiple APIs serving the same workflow | One server named for the workflow (`threat-intel-mcp-server`), APIs are internal sources |
+| Domain with distinct sub-audiences | Consider splitting — a pentester and a SOC analyst have different workflows even in the same domain |
+| Pure computation, no external deps | Standalone server named for the capability (`calculator-mcp-server`, `redteam-mcp-server`) |
+
+When multiple APIs collapse into one server, the tool surface is organized around what the user is doing, not which API gets called. The agent says "investigate this domain" and the server routes to the best available source internally. Individual APIs become service-layer implementation details, not tool-surface identities.
 
 ## Server Naming
 
@@ -140,6 +157,56 @@ const findStudies = tool('clinicaltrials_find_studies', {
 ```
 
 > **Tip — mode consolidation.** When a tool has several related operations on the same noun, you can consolidate them under one tool with a `mode`/`operation` enum. This affects both naming (noun-led, e.g., `github_pull_request`) and handler design (dispatch by mode). Use when it tightens the surface; skip when ops diverge enough to warrant separate tools.
+
+#### Multi-source tools and fallback chains
+
+**Applies when:** a server aggregates multiple data sources for the same workflow, and the "best" source varies by input type, availability, or coverage. Skip for single-API servers.
+
+When a tool's goal can be served by multiple sources, design it as a **multi-source tool** — the agent calls one tool, the handler routes to the best source (or fans out to several) internally. This is the difference between a "PubMed wrapper" and a "literature research server": `pubmed_search_articles` tries PubMed first, falls back to EuropePMC for broader coverage, then Unpaywall for open access. The agent doesn't choose which API to hit — the server makes that decision based on what works.
+
+Two patterns:
+
+**Source fallback chains** — try sources in priority order, fall through on failure or empty results. Best when sources cover the same data with different depth or availability. The output should indicate which source provided the data so the agent (and human) can assess provenance.
+
+```ts
+// Handler pseudocode — not a real implementation
+async handler(input, ctx) {
+  // Primary: PubMed E-utilities (authoritative, best metadata)
+  const result = await pubmedService.search(input.query);
+  if (result.items.length > 0) return { ...result, source: 'pubmed' };
+
+  // Fallback: EuropePMC (broader coverage, includes preprints)
+  const epmcResult = await epmcService.search(input.query);
+  if (epmcResult.items.length > 0) return { ...epmcResult, source: 'europepmc' };
+
+  return { items: [], source: 'none', message: 'No results from any source.' };
+}
+```
+
+**Multi-source fan-out** — query multiple sources in parallel, merge results. Best when sources provide complementary data about the same entity. Use `Promise.allSettled` so one failing source doesn't tank the whole call.
+
+```ts
+// Handler pseudocode — indicator enrichment across threat intel sources
+async handler(input, ctx) {
+  const [vt, abuse, greynoise] = await Promise.allSettled([
+    vtService.lookup(input.indicator),
+    abuseIpService.check(input.indicator),
+    greynoiseService.query(input.indicator),
+  ]);
+  return {
+    indicator: input.indicator,
+    sources: {
+      virustotal: vt.status === 'fulfilled' ? vt.value : { error: vt.reason.message },
+      abuseipdb: abuse.status === 'fulfilled' ? abuse.value : { error: abuse.reason.message },
+      greynoise: greynoise.status === 'fulfilled' ? greynoise.value : { error: greynoise.reason.message },
+    },
+    // Server synthesizes a verdict from available data — the agent gets a conclusion, not raw API dumps
+    assessment: synthesizeVerdict(vt, abuse, greynoise),
+  };
+}
+```
+
+In both patterns, the tool surface is organized around what the user is doing. Sources are service-layer details — the agent sees `threat_enrich_indicator`, not `virustotal_lookup` + `abuseipdb_check` + `greynoise_query`. Mode-based dispatch by input type (e.g., `indicator_type: 'ip' | 'domain' | 'hash'`) naturally routes to different source chains per mode, since different sources cover different indicator types.
 
 There is no fixed ceiling on tool count — tools need to earn their keep, but don't artificially limit the surface. If the domain genuinely has 20 distinct workflows, expose 20 tools.
 
@@ -281,9 +348,13 @@ output: z.object({
 }),
 ```
 
+- **Capped lists disclose truncation.** When a tool accepts a cap-like input (`limit`, `per_page`, `page_size`, `max_results`, `max_items`) and returns an array, the handler must disclose when the cap was hit. Standard fields: `truncated: true`, `shown`, `cap` in the `enrichment` block via `ctx.enrich.truncated({ shown, cap })`. `ctx.enrich.total(n)` (writes `totalCount`) is also recognized. Silent caps leave the agent treating a partial set as complete. The `capped-list-no-truncation` lint rule enforces this; see `api-linter` and `api-context`'s `ctx.enrich.truncated()` section.
 - **Truncate large output with counts.** When a list exceeds a reasonable display size, show the top N and append "...and X more". Don't silently drop results.
-- **Spill big tabular results to a queryable surface.** When a tool's row set can exceed any reasonable context budget — paginated APIs, streamed exports, big query results — pair an inline preview with a `DataCanvas` table holding the full set, returned as a token the agent can SQL. Compute distributions or refinement hints across the full result, not the preview, so aggregate signal stays honest. See `api-canvas` for the `spillover()` helper.
+- **Spill big *analytical* results to a queryable surface.** When a tool's row set is something an agent would run SQL over (aggregate, group, join) *and* can exceed any reasonable context budget — paginated APIs, streamed exports, big query results — pair an inline preview with a `DataCanvas` table holding the full set. **Two rules gate this:** (1) it must earn its keep on *shape, not size* — a discovery/search surface of categorical metadata (titles, IDs) is not analytical and doesn't get a canvas regardless of row count; for name→ID resolution over a bounded list use [MCP-side list filtering](#mcp-side-list-filtering); (2) the `canvas_id` is reachable only if the same server **also exposes a `dataframe_query` tool** — emit one without the other and the handle is dead output. Compute distributions or refinement hints across the full result, not the preview, so aggregate signal stays honest. See `api-canvas` for the `spillover()` helper and both rules in full.
+- **Outline one large *document* into sections.** When a single tool call returns one document-shaped record (not many rows) that can exceed context — a ~130KB FDA drug label, a big API entity dominated by a few fat fields — return a section *outline* (top-level keys + per-section byte size) instead of truncating, and let the agent re-call with `sections: [...]` to pull only what it needs. The `outlineOnOverflow()` helper (`@cyanheads/mcp-ts-core/utils`) measures the payload and returns a `full | outline` discriminated union; declare its `OUTLINE_VARIANT` as a branch of the tool's `output` so `format()`-parity is enforced per branch. Pure measure + key-slice — Workers-portable, unlike canvas-bound `spillover()`. Distinct from spillover on *shape*: spillover splits a row collection, this outlines one fat record. See the `techniques` skill's `outline-on-overflow` reference.
+- **Mirror a bulk upstream instead of paginating it live.** When the server wraps a large or slow API whose corpus is queried far more than it changes, sync it once into a persistent local index and query that as the primary data path — not the live API per request. Match the backend to corpus size: ≲ tens of thousands of rows → an in-memory index (server-level, no primitive); ~10⁴–10⁷ → the `MirrorService` (embedded SQLite + FTS5; declare a schema + a `sync` ingester via `defineMirror`/`sqliteMirrorStore`, then `runSync`/`query`, see `api-mirror`); ≳ 10⁸ → an external store. Distinct lifecycle from DataCanvas: a mirror is long-lived and cross-session, refreshed on a schedule; canvas is ephemeral and per-session.
 - **`format()` is the markdown twin of `structuredContent` — make both content-complete.** Different MCP clients forward different surfaces to the model: some (e.g., Claude Code) read `structuredContent` from `output`, others (e.g., Claude Desktop) read `content[]` from `format()`. Both must carry the same data so every client sees the same picture — `format()` just dresses it up with markdown. A thin `format()` that returns only a count or title leaves `content[]`-only clients blind to data that `structuredContent` clients can see. Render all fields the LLM needs, with structured markdown (headers, bold labels, lists) for readability.
+- **Agent-facing context must reach both client surfaces — put it in `enrichment`.** `structuredContent` (from `output`) and `content[]` (from `format()`) are read by different clients. Empty-result notices, the query/filter as the server parsed it, and pagination totals — the context the agent *reasons with*, distinct from the domain payload — reach only `content[]` if hand-authored into `format()` text alone, leaving `structuredContent`-only clients (Claude Code) blind. (The reverse can't happen: `format-parity` drags every `output` field into `format()`, so `output`-authored context already reaches both.) An `enrichment` block — the success-path counterpart to `errors[]`, populated via `ctx.enrich(...)` — reaches both automatically: merged into `structuredContent`, advertised as `output.extend(enrichment)`, mirrored into a `content[]` trailer, no `format()` entry needed. How each field renders in that trailer is a per-tool call — a kind-tag (`notice`/`total`/`echo`/`delta`) when a canonical form fits, a domain key like `totalFound` otherwise, and an `enrichmentTrailer.render` for any structured (object/array) field so it doesn't ship as a JSON blob. See `add-tool`'s **Tool Response Design**.
 
 #### Batch input design
 
@@ -330,6 +401,21 @@ query: z.record(z.unknown()).optional()
 ```
 
 The pattern: name the shortcut for what it does (`text_search`, `name_search`), document what it expands to, and point to the full parameter for advanced use. Validate that at least one of the two is provided.
+
+#### MCP-side list filtering
+
+**Applies when:** an upstream API has no native search, the relevant set is bounded (fits one or a few fetches), and an agent needs to resolve a name → opaque ID. Skip when the API already searches, or when the set is unbounded (bills, votes, filings) — that belongs in the DataCanvas dataframe layer (`*_dataframe_query`), not an in-memory filter.
+
+Two params, two behaviors — keep them named distinctly:
+
+- **`query`** → **upstream** full-text search. The API does the work; it may honor operators and ranking.
+- **a local filter param** → **fetched-then-filtered on our side**. Name it for the mechanic: `filter` or `nameContains` (the latter self-documents the local, name-keyed half of the split). Don't overload `query` for it — the two have different semantics and different cost.
+
+**Earns-its-keep gate — all must hold:** bounded set; no native upstream search; real scan pain (opaque IDs, a large/unordered list, or a default page that hides relevant rows); and it filters the natural lookup key (name/title). When any fails, skip it — paginate, or send the agent to upstream `query`.
+
+**Correctness: filter the *complete* bounded set, not the current page.** Fetch up to the cap (or page through) before filtering — filtering one page returns a misleading partial slice.
+
+**Matching: strict token match is the default.** Normalize (lowercase, strip punctuation/diacritics) and require every query token to appear, so word order and missing interior words still match. That strict core is the ~90% case, needs no fuzzy library, and is too small to centralize (~6 lines — guidance, not a shared helper). Add a fuzzy fallback **only when a caller genuinely needs typo tolerance** (an LLM caller rarely does): fire it only when the strict match is empty, score against the best-matching *token* in each name (not the whole string) and **cap** the results — or one short query clears the threshold against dozens of long multi-word names — and label its hits `approximate`. Often a bare "no match — call the unfiltered list to browse" beats an `approximate` guess: it lets the model self-correct instead of committing to the wrong record. See `add-tool` for the param + handler implementation.
 
 #### Error design
 
@@ -416,11 +502,11 @@ Skip for purely data/action-oriented servers.
 
 ### 7. Plan Services and Config
 
-**Services** — one per external dependency. Init/accessor pattern. Skip if all tools are thin wrappers with no shared state.
+**Services** — one per external dependency (or per source, for multi-source servers). Init/accessor pattern. Skip if all tools are thin wrappers with no shared state. For multi-source servers, each upstream API gets its own service with its own auth, rate limits, and retry config — tools compose across services internally, agents never see the service boundary.
 
 **Server-as-service.** When the server IS the source of truth (knowledge graph, in-memory task tracker, local scratchpad, embedded inference wrapper), the resilience table below doesn't apply — there's no upstream to retry. The design questions shift to state management: what's tenant-scoped vs. global, what TTLs apply, what survives a restart, what the storage backend is. Plan persistence via `ctx.state` for tenant-scoped KV (auto-namespaced by `tenantId`), or use a `StorageService` provider directly when data must cross tenants. Service init still happens in `setup()`, accessed via `getMyService()` at request time. Calls within the server are local and synchronous-ish — the API-efficiency table below also doesn't apply.
 
-**Tabular API servers: DataCanvas is one option.** For servers that fetch tabular data and want to expose a SQL/analytical workspace — register tables, run cross-table queries, export results — the framework's optional `DataCanvas` primitive (Tier 3, opt-in via `CANVAS_PROVIDER_TYPE=duckdb`) handles lifecycle, ID generation, eviction, and export wiring so you don't design your own. If you opt in, surface `canvas_id` as an optional input on register/query/export tools; the framework mints on omit and resolves on match. Tools access it via `ctx.core.canvas?` (undefined when disabled or running on Workers — DuckDB has no V8-isolate build). See `api-canvas` for the full reference.
+**Analytical API servers: DataCanvas is one option.** For servers that fetch **analytical** data — result sets an agent runs SQL over (aggregate, group, join, time-series) — and want to expose a SQL workspace, the framework's optional `DataCanvas` primitive (Tier 3, opt-in via `CANVAS_PROVIDER_TYPE=duckdb`) handles lifecycle, ID generation, eviction, and export wiring so you don't design your own. **It earns its keep on shape, not size:** a discovery/search surface returning categorical metadata (titles, IDs, types) — where the workflow is find-the-record-then-drill-in — does *not* qualify even when the result is large; resolve names over a bounded set with [MCP-side list filtering](#mcp-side-list-filtering) instead. **If you opt in, the consumer tools are mandatory:** a tool that emits a `canvas_id` MUST be paired with a `dataframe_query` (and `dataframe_describe`) tool in the same surface — a `canvas_id` with no query tool is dead output the agent can't reach. Surface `canvas_id` as an optional input on register/query/export tools; the framework mints on omit and resolves on match. Tools access it via `ctx.core.canvas?` (undefined when disabled or running on Workers — DuckDB has no V8-isolate build). See `api-canvas` for the full reference.
 
 For services wrapping external APIs, plan the resilience layer.
 
@@ -539,6 +625,8 @@ Execute the plan using the scaffolding skills:
 
 Items without an `If …:` prefix apply to every design. Conditional items only apply when the trigger fires — otherwise skip them.
 
+- [ ] Server scope decided — workflow identified, audience sized, boundary drawn (standalone single-API vs. multi-source aggregation vs. internal-only)
+- [ ] **If multi-source:** tool surface organized around user workflows, not API identity. Sources are service-layer details.
 - [ ] External APIs/dependencies researched and verified (docs fetched, SDKs identified)
 - [ ] **If wrapping an external API:** live API probed (at minimum: one list/search, one single-item GET, one error case)
 - [ ] User goals enumerated first (3–10 outcomes agents will accomplish, scaled to domain size), then domain operations mapped as raw material
@@ -558,6 +646,7 @@ Items without an `If …:` prefix apply to every design. Conditional items only 
 - [ ] Design doc written to `docs/design.md`
 - [ ] Design confirmed with user (or user pre-authorized implementation)
 - [ ] **If ops share a noun:** related operations consolidated under one tool with `mode`/`operation` enum
+- [ ] **If an upstream API has no native search but the relevant set is bounded:** MCP-side list filtering considered — a distinct local filter param (`filter`/`nameContains`, not `query`), filtering the full set, strict token match (fuzzy only when a caller needs typo tolerance)
 - [ ] **If the server has workflow tools:** call-flow documented (upstream sequence + mode arms) in design doc's Workflow Analysis
 - [ ] **If state-aware procedural guidance adds value:** instruction tool considered with `nextToolSuggestions` pre-filled from diagnostics
 - [ ] **If workflow tools have destructive modes:** destructive arm guarded by `ctx.elicit` when available, with `destructiveHint` annotation as fallback for non-interactive clients
@@ -567,5 +656,6 @@ Items without an `If …:` prefix apply to every design. Conditional items only 
 - [ ] **If the server is itself the source of truth (no external API):** state lifecycle planned — tenant-scoped vs. global, TTLs, what survives restart, storage backend chosen
 - [ ] **If the server has external deps or shared state:** service layer planned (or explicitly skipped with reasoning)
 - [ ] **If services wrap external APIs:** resilience planned (retry boundary, backoff, parse classification)
-- [ ] **If exposing a SQL/analytical workspace over tabular data is in scope:** DataCanvas considered (`api-canvas` skill) as one option before designing custom analytical state — register / query / export tools accepting an optional `canvas_id`, with `ctx.core.canvas?` reads
+- [ ] **If multi-source server:** each source has its own service with independent auth/retry/rate-limit config. Fallback chains or fan-out strategy documented per tool. Output includes source provenance.
+- [ ] **If exposing a SQL/analytical workspace is in scope:** DataCanvas considered (`api-canvas` skill), and it earns its keep on *analytical* fit (an agent would SQL it), not row count — a discovery/search surface of categorical metadata doesn't qualify. Any tool emitting a `canvas_id` is paired with a `dataframe_query` (+ `dataframe_describe`) tool in the same surface — a token with no query tool is dead output
 - [ ] **If the server needs runtime config:** env vars identified in `server-config.ts`

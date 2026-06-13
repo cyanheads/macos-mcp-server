@@ -19,6 +19,14 @@ breaking: false
 # `## Security` section below. Flagged as `Security` in the rollup so
 # users can triage upgrade urgency at a glance.
 security: false
+
+# Optional free-form notes for maintenance agents processing this release.
+# Not rendered in CHANGELOG — consumed by agents running `maintenance` on
+# downstream servers. Use for adoption instructions that don't fit the
+# human-facing sections: new files to create, fields to populate, one-time
+# migration steps. Omit the field entirely when there's nothing to say.
+# agent-notes: |
+#   <instructions for downstream maintenance agents>
 ---
 
 # <version> — YYYY-MM-DD
@@ -35,7 +43,7 @@ security: false
   name the symbol, state what changed, stop. Use a second sentence only when
   it carries weight. If a bullet feels long, it is.
 
-  Cut: mechanism walkthroughs (those belong in JSDoc, AGENTS.md, or the
+  Cut: mechanism walkthroughs (those belong in JSDoc, CLAUDE.md/AGENTS.md, or the
   relevant skill), ceremonial framings ("This release introduces…",
   backwards-compat paragraphs), file-by-file test enumerations, internal
   implementation notes. Prefer code/symbol names over English re-explanations.
