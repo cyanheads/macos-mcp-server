@@ -1,0 +1,9 @@
+{
+  "@cyanheads/macos-mcp-server": {
+    "command": "npx",
+    "args": ["-y", "@cyanheads/macos-mcp-server"],
+    "env": {
+      "MCP_TRANSPORT_TYPE": "stdio"
+    }
+  }
+}

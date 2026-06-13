@@ -1,0 +1,25 @@
+{
+  "name": "@cyanheads/macos-mcp-server",
+  "version": "0.1.4",
+  "description": "Control macOS system settings, apps, windows, audio, displays, screenshots, and Focus mode via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/macos-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/macos-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "macos", "automation", "system-control"],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "@cyanheads/macos-mcp-server",
+    "shortDescription": "Control macOS system settings, apps, windows, audio, displays, screenshots, and Focus mode via MCP.",
+    "longDescription": "MCP server for controlling macOS — system settings, application and window management, audio, displays, screenshots, and Focus mode. STDIO or Streamable HTTP.",
+    "developerName": "cyanheads",
+    "category": "developer tools",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/macos-mcp-server",
+    "defaultPrompt": []
+  }
+}
