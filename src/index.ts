@@ -31,6 +31,8 @@ import { initScreencaptureService } from './services/screencapture/screencapture
 import { initSystemInfoService } from './services/system-info/system-info-service.js';
 
 await createApp({
+  name: 'macos-mcp-server',
+  title: 'macos-mcp-server',
   tools: [
     macosGetInfo,
     macosCheckPermissions,
