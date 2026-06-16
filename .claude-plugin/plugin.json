@@ -1,5 +1,5 @@
 {
-  "name": "@cyanheads/macos-mcp-server",
+  "name": "macos-mcp-server",
   "version": "0.1.4",
   "description": "Control macOS system settings, apps, windows, audio, displays, screenshots, and Focus mode via MCP. STDIO or Streamable HTTP.",
   "author": {
@@ -9,7 +9,7 @@
   "repository": "https://github.com/cyanheads/macos-mcp-server",
   "license": "Apache-2.0",
   "mcpServers": {
-    "@cyanheads/macos-mcp-server": {
+    "macos-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/macos-mcp-server"],
       "env": {
