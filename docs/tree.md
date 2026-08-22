@@ -1,10 +1,9 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-06-13 03:56:17
+Generated on: 2026-08-22 21:28:47
 
 ```text
 macos-mcp-server/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -15,7 +14,10 @@ macos-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
-│   └── FUNDING.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
+│   ├── FUNDING.yml
+│   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -28,6 +30,7 @@ macos-mcp-server/
 ├── scripts/
 │   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts
@@ -165,7 +168,9 @@ macos-mcp-server/
 │   ├── security/
 │   │   └── injection.test.ts
 │   ├── services/
-│   │   └── audio-service.test.ts
+│   │   ├── audio-service.test.ts
+│   │   ├── display-service.test.ts
+│   │   └── system-info-service.test.ts
 │   └── tools/
 │       ├── macos-check-permissions.tool.test.ts
 │       ├── macos-control-appearance.tool.test.ts
@@ -181,10 +186,12 @@ macos-mcp-server/
 │       ├── macos-send-notification.tool.test.ts
 │       └── macos-take-screenshot.tool.test.ts
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
 ├── biome.json
 ├── bun.lock
+├── bunfig.toml
 ├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json

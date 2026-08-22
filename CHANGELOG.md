@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-08-22
+
+mcp-ts-core ^0.12.3 (strict inputs, 2020-12 schemas, resource subscriptions), battery/display parsing fixes, community-health docs
+
 ## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-06-12
 
 mcp-ts-core ^0.10.6 adoption, semantic error codes for tool failures, release/bundle tooling, plugin manifests
