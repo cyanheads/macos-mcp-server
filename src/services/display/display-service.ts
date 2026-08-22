@@ -14,6 +14,15 @@ const execFile = promisify(execFileCallback);
 
 const DISPLAYPLACER = '/opt/homebrew/bin/displayplacer';
 
+/**
+ * displayplacer annotates some field values with a trailing ` - <note>`
+ * ("(0,0) - main display", "0 - rotate internal screen example: ..."). The note
+ * is prose, so it is stripped to keep the value parseable by a consumer.
+ */
+function stripAnnotation(value: string | undefined): string | undefined {
+  return value?.split(' - ')[0]?.trim();
+}
+
 export interface DisplayInfo {
   enabled: boolean;
   hz: string;
@@ -98,8 +107,8 @@ export class DisplayService {
         type: typeMatch?.[1]?.trim() ?? 'Unknown',
         resolution: resMatch?.[1]?.trim() ?? 'Unknown',
         hz: hzMatch?.[1]?.trim() ?? 'Unknown',
-        origin: originMatch?.[1]?.trim() ?? '(0,0)',
-        rotation: rotMatch?.[1]?.trim() ?? '0',
+        origin: stripAnnotation(originMatch?.[1]) ?? '(0,0)',
+        rotation: stripAnnotation(rotMatch?.[1]) ?? '0',
         scaling: scalingMatch?.[1]?.trim() ?? 'off',
         enabled: (enabledMatch?.[1]?.trim() ?? 'true') === 'true',
       });
@@ -108,9 +117,16 @@ export class DisplayService {
   }
 
   private extractCurrentConfig(output: string): string {
-    // The "Current screen arrangement command:" section has the displayplacer command
-    const match = output.match(/displayplacer\s+"[^"]*"(?:\s+"[^"]*")*/);
-    return match?.[0] ?? '';
+    /**
+     * displayplacer prints the real arrangement command LAST, under "Execute
+     * the command below". Earlier in the output it embeds an example rotation
+     * command — `displayplacer "id:... degree:90"` — inside the per-display
+     * rotation warning, which the same pattern matches. Taking the first match
+     * captured that example, so a caller saving "the current layout" stored a
+     * command that rotates one display 90 degrees. Take the last match.
+     */
+    const matches = output.match(/displayplacer\s+"[^"]*"(?:\s+"[^"]*")*/g);
+    return matches?.[matches.length - 1] ?? '';
   }
 
   private splitLayoutArgs(layoutArgs: string): string[] {
@@ -119,8 +135,8 @@ export class DisplayService {
     const args: string[] = [];
     for (;;) {
       const m = regex.exec(layoutArgs);
-      if (m === null) break;
-      args.push(m[1]!);
+      if (m?.[1] === undefined) break;
+      args.push(m[1]);
     }
     return args.length > 0 ? args : [layoutArgs];
   }

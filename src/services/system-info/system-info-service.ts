@@ -79,9 +79,13 @@ export class SystemInfoService {
       return null;
     }
 
-    const levelMatch = battLine.match(/(\d+)%/);
-    const level = levelMatch ? parseInt(levelMatch[1]!, 10) : 0;
-    const charging = battLine.includes('charging') || battLine.includes('AC attached');
+    const levelMatch = battLine.match(/(\d+)%/)?.[1];
+    const level = levelMatch ? parseInt(levelMatch, 10) : 0;
+    /**
+     * Word-boundary match: `'discharging'.includes('charging')` is true, so a
+     * plain substring test reported a draining battery as charging.
+     */
+    const charging = /\bcharging\b/.test(battLine) || battLine.includes('AC attached');
     let power_source: 'AC' | 'Battery' | 'UPS' = 'Battery';
     if (powerLine.includes('AC Power')) power_source = 'AC';
     else if (powerLine.includes('UPS')) power_source = 'UPS';
@@ -101,9 +105,9 @@ export class SystemInfoService {
   private parseUptime(uptimeOut: string): number {
     if (!uptimeOut) return 0;
     // kern.boottime: { sec = 1748300000, usec = 0 } Mon...
-    const match = uptimeOut.match(/sec\s*=\s*(\d+)/);
-    if (match) {
-      const bootSec = parseInt(match[1]!, 10);
+    const bootSecMatch = uptimeOut.match(/sec\s*=\s*(\d+)/)?.[1];
+    if (bootSecMatch) {
+      const bootSec = parseInt(bootSecMatch, 10);
       return Math.floor(Date.now() / 1000) - bootSec;
     }
     return 0;

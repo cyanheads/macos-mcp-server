@@ -80,6 +80,35 @@ describe('macosGetInfo', () => {
     expect(text).toContain('HomeNetwork');
   });
 
+  it('format labels a discharging battery as on battery', () => {
+    const blocks = macosGetInfo.format!({
+      ...mockSystemInfo,
+      battery: { level: 62, charging: false, power_source: 'Battery' },
+    });
+    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
+    expect(text).toContain('62% — on battery');
+    expect(text).toContain('**Power Source:** Battery');
+  });
+
+  it('format does not label a charged battery on AC as on battery', () => {
+    const blocks = macosGetInfo.format!({
+      ...mockSystemInfo,
+      battery: { level: 100, charging: false, power_source: 'AC' },
+    });
+    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
+    expect(text).not.toContain('on battery');
+    expect(text).toContain('**Power Source:** AC');
+  });
+
+  it('format labels an actively charging battery as charging', () => {
+    const blocks = macosGetInfo.format!({
+      ...mockSystemInfo,
+      battery: { level: 85, charging: true, power_source: 'AC' },
+    });
+    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
+    expect(text).toContain('85% — charging');
+  });
+
   it('format handles null battery', () => {
     const blocks = macosGetInfo.format!({ ...mockSystemInfo, battery: null });
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');

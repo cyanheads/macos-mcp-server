@@ -57,9 +57,18 @@ export const macosGetInfo = tool('macos_get_info', {
     lines.push('');
     lines.push('### Power');
     if (result.battery) {
-      lines.push(
-        `**Battery:** ${result.battery.level}% — ${result.battery.charging ? 'charging' : 'on battery'}`,
-      );
+      /**
+       * `charging` and `power_source` are independent facts: pmset reports
+       * `charged` for a full battery on AC, which is neither charging nor
+       * running on battery. Deriving the label from `charging` alone printed
+       * "on battery" directly above "Power Source: AC".
+       */
+      const state = result.battery.charging
+        ? 'charging'
+        : result.battery.power_source === 'Battery'
+          ? 'on battery'
+          : 'not charging';
+      lines.push(`**Battery:** ${result.battery.level}% — ${state}`);
       lines.push(`**Power Source:** ${result.battery.power_source}`);
     } else {
       lines.push('**Battery:** Not available (desktop or no battery)');
