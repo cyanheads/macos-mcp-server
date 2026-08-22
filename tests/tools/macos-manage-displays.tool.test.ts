@@ -48,7 +48,7 @@ describe('macosManageDisplays', () => {
   });
 
   it('list returns connected displays', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageDisplays.errors });
     const result = await macosManageDisplays.handler(
       macosManageDisplays.input.parse({ action: 'list' }),
       ctx,
@@ -62,7 +62,7 @@ describe('macosManageDisplays', () => {
   it('apply_layout applies the named layout', async () => {
     const svc = makeDisplayService();
     vi.mocked(getDisplayService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageDisplays.errors });
     const result = await macosManageDisplays.handler(
       macosManageDisplays.input.parse({ action: 'apply_layout', layout_name: 'desk' }),
       ctx,
@@ -83,7 +83,7 @@ describe('macosManageDisplays', () => {
   });
 
   it('apply_layout requires layout_name', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageDisplays.errors });
     await expect(
       macosManageDisplays.handler(macosManageDisplays.input.parse({ action: 'apply_layout' }), ctx),
     ).rejects.toThrow('layout_name is required');

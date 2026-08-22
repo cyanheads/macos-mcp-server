@@ -7,12 +7,25 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AudioService } from '@/services/audio/audio-service.js';
 
-// Mock execFile at the module level so we control SwitchAudioSource output
-vi.mock('node:child_process', () => ({
-  execFile: vi.fn(),
-}));
+/**
+ * Shape of the mocked `execFile`. The service wraps it in `promisify`, and the
+ * module mock carries no `util.promisify.custom` hook, so promisify takes the
+ * generic path and resolves with the callback's second argument. That is the
+ * contract these mocks implement — not Node's own `execFile` overloads.
+ */
+type ExecFileMock = (
+  cmd: string,
+  args: string[],
+  opts: unknown,
+  cb: (err: NodeJS.ErrnoException | null, result?: { stdout: string; stderr: string }) => void,
+) => unknown;
 
-import { execFile as execFileCb } from 'node:child_process';
+// Mock execFile at the module level so we control SwitchAudioSource output
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn<ExecFileMock>() }));
+
+vi.mock('node:child_process', () => ({
+  execFile: execFileMock,
+}));
 
 const JSON_LINES = [
   '{"name": "MacBook Pro Speakers", "type": "output", "id": "76", "uid": "BuiltInSpeakerDevice"}',
@@ -32,27 +45,20 @@ describe('AudioService.listDevices', () => {
   });
 
   it('parses -f json output and returns all devices', async () => {
-    vi.mocked(execFileCb).mockImplementation(
-      (
-        _cmd: string,
-        args: string[],
-        _opts: unknown,
-        cb: (err: null, result: { stdout: string; stderr: string }) => void,
-      ) => {
-        if (args.includes('-f') && args.includes('json')) {
-          cb(null, { stdout: JSON_LINES, stderr: '' });
-        } else if (args.includes('-c')) {
-          const isInput = args.includes('input');
-          cb(null, {
-            stdout: isInput ? 'MacBook Pro Microphone\n' : 'MacBook Pro Speakers\n',
-            stderr: '',
-          });
-        } else {
-          cb(null, { stdout: '', stderr: '' });
-        }
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, args, _opts, cb) => {
+      if (args.includes('-f') && args.includes('json')) {
+        cb(null, { stdout: JSON_LINES, stderr: '' });
+      } else if (args.includes('-c')) {
+        const isInput = args.includes('input');
+        cb(null, {
+          stdout: isInput ? 'MacBook Pro Microphone\n' : 'MacBook Pro Speakers\n',
+          stderr: '',
+        });
+      } else {
+        cb(null, { stdout: '', stderr: '' });
+      }
+      return { pid: 1 };
+    });
 
     const ctx = createMockContext();
     const devices = await svc.listDevices(ctx);
@@ -66,23 +72,16 @@ describe('AudioService.listDevices', () => {
   });
 
   it('filters by type=output', async () => {
-    vi.mocked(execFileCb).mockImplementation(
-      (
-        _cmd: string,
-        args: string[],
-        _opts: unknown,
-        cb: (err: null, result: { stdout: string; stderr: string }) => void,
-      ) => {
-        if (args.includes('-f') && args.includes('json')) {
-          cb(null, { stdout: JSON_LINES, stderr: '' });
-        } else if (args.includes('-c')) {
-          cb(null, { stdout: 'MacBook Pro Speakers\n', stderr: '' });
-        } else {
-          cb(null, { stdout: '', stderr: '' });
-        }
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, args, _opts, cb) => {
+      if (args.includes('-f') && args.includes('json')) {
+        cb(null, { stdout: JSON_LINES, stderr: '' });
+      } else if (args.includes('-c')) {
+        cb(null, { stdout: 'MacBook Pro Speakers\n', stderr: '' });
+      } else {
+        cb(null, { stdout: '', stderr: '' });
+      }
+      return { pid: 1 };
+    });
 
     const ctx = createMockContext();
     const devices = await svc.listDevices(ctx, 'output');
@@ -91,12 +90,10 @@ describe('AudioService.listDevices', () => {
   });
 
   it('throws switchaudio_unavailable when binary is missing (ENOENT)', async () => {
-    vi.mocked(execFileCb).mockImplementation(
-      (_cmd: string, _args: string[], _opts: unknown, cb: (err: NodeJS.ErrnoException) => void) => {
-        cb(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      cb(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      return { pid: 1 };
+    });
     const ctx = createMockContext();
     await expect(svc.listDevices(ctx)).rejects.toMatchObject({
       data: { reason: 'switchaudio_unavailable' },

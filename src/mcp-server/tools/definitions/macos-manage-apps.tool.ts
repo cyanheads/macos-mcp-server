@@ -188,8 +188,8 @@ export const macosManageApps = tool('macos_manage_apps', {
         if (input.hidden) launchArgs.push('-j');
         if (input.bundle_id) {
           launchArgs.push('-b', input.bundle_id);
-        } else {
-          launchArgs.push('-a', input.app_name!);
+        } else if (input.app_name) {
+          launchArgs.push('-a', input.app_name);
         }
         try {
           await execFile('open', launchArgs, { timeout: 15_000 });

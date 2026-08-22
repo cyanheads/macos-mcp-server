@@ -9,7 +9,7 @@ import { macosManageFocus } from '@/mcp-server/tools/definitions/macos-manage-fo
 
 describe('macosManageFocus', () => {
   it('get returns a valid status field', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageFocus.errors });
     // Live call — macOS 13+ often returns "unknown", which is expected
     const result = await macosManageFocus.handler(
       macosManageFocus.input.parse({ action: 'get' }),
@@ -19,7 +19,7 @@ describe('macosManageFocus', () => {
   }, 10_000);
 
   it('get "unknown" status is not an error (expected on macOS 13+)', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageFocus.errors });
     const result = await macosManageFocus.handler(
       macosManageFocus.input.parse({ action: 'get' }),
       ctx,
@@ -30,7 +30,7 @@ describe('macosManageFocus', () => {
   }, 10_000);
 
   it('set requires mode', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageFocus.errors });
     await expect(
       macosManageFocus.handler(macosManageFocus.input.parse({ action: 'set' }), ctx),
     ).rejects.toThrow('mode is required');

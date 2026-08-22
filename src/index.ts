@@ -58,7 +58,7 @@ await createApp({
     initScreencaptureService(core.config, core.storage);
   },
   instructions:
-    'macOS system controls server (local-only, stdio transport). ' +
+    'macOS system controls server (local-only; stdio or Streamable HTTP). ' +
     'Provides app lifecycle, window management, audio routing, display management, screenshots, Finder integration, notifications, and Focus mode control. ' +
     'Use macos_check_permissions first to confirm which permissions are granted before attempting window manipulation, screenshots, or Finder selection.',
 });

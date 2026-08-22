@@ -34,6 +34,6 @@ export const macosSystemInfoResource = resource('macos://system/info', {
   }),
 
   async handler(_params, ctx) {
-    return getSystemInfoService().getSystemInfo(ctx);
+    return await getSystemInfoService().getSystemInfo(ctx);
   },
 });

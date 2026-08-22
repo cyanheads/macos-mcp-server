@@ -334,8 +334,8 @@ function resolveDisplayIndex(
   screenFrames: Array<{ x: number; y: number; w: number; h: number }>,
 ): number {
   for (let i = 0; i < screenFrames.length; i++) {
-    const s = screenFrames[i]!;
-    if (wx >= s.x && wx < s.x + s.w && wy >= s.y && wy < s.y + s.h) return i;
+    const s = screenFrames[i];
+    if (s && wx >= s.x && wx < s.x + s.w && wy >= s.y && wy < s.y + s.h) return i;
   }
   return 0;
 }

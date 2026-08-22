@@ -11,11 +11,28 @@ vi.mock('@/services/osascript/osascript-service.js', () => ({
   initOsascriptService: vi.fn(),
 }));
 
-vi.mock('node:child_process', () => ({
-  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: null) => void) => {
+/**
+ * Shape of the mocked `execFile`. Callers wrap it in `promisify`, and the module
+ * mock carries no `util.promisify.custom` hook, so promisify takes the generic
+ * path and resolves with the callback's second argument. That is the contract
+ * these mocks implement — not Node's own `execFile` overloads.
+ */
+type ExecFileMock = (
+  cmd: string,
+  args: string[],
+  opts: unknown,
+  cb: (err: NodeJS.ErrnoException | null, result?: { stdout: string; stderr: string }) => void,
+) => unknown;
+
+const { execFileMock } = vi.hoisted(() => ({
+  execFileMock: vi.fn<ExecFileMock>((_cmd, _args, _opts, cb) => {
     cb(null);
     return { pid: 1 };
   }),
+}));
+
+vi.mock('node:child_process', () => ({
+  execFile: execFileMock,
 }));
 
 import { macosManageFinder } from '@/mcp-server/tools/definitions/macos-manage-finder.tool.js';
@@ -37,7 +54,7 @@ describe('macosManageFinder', () => {
     vi.mocked(getOsascriptService).mockReturnValue(
       makeOsascript({ appleScriptOut: '/Users/test/Documents\n' }) as never,
     );
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageFinder.errors });
     const result = await macosManageFinder.handler(
       macosManageFinder.input.parse({ action: 'frontmost_path' }),
       ctx,
@@ -49,7 +66,7 @@ describe('macosManageFinder', () => {
     const svc = makeOsascript();
     svc.runAppleScript.mockRejectedValue(new Error('Invalid index'));
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageFinder.errors });
     const result = await macosManageFinder.handler(
       macosManageFinder.input.parse({ action: 'frontmost_path' }),
       ctx,
@@ -62,7 +79,7 @@ describe('macosManageFinder', () => {
     vi.mocked(getOsascriptService).mockReturnValue(
       makeOsascript({ jxaOut: JSON.stringify(selection) }) as never,
     );
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageFinder.errors });
     const result = await macosManageFinder.handler(
       macosManageFinder.input.parse({ action: 'get_selection' }),
       ctx,
@@ -167,21 +184,21 @@ describe('macosManageFinder', () => {
   });
 
   it('reveal throws path_not_found (not raw command) when open rejects with "no such file"', async () => {
-    const { execFile: mockExecFile } = await import('node:child_process');
-    vi.mocked(mockExecFile).mockImplementationOnce(
-      (_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null) => void) => {
-        cb(
-          Object.assign(new Error('Command failed: open -R /nonexistent/path'), {
-            stderr: 'no such file or directory',
-          }),
-        );
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+      cb(
+        Object.assign(new Error('Command failed: open -R /nonexistent/path'), {
+          stderr: 'no such file or directory',
+        }),
+      );
+      return { pid: 1 };
+    });
     const ctx = createMockContext({ errors: macosManageFinder.errors });
-    const err = await macosManageFinder
-      .handler(macosManageFinder.input.parse({ action: 'reveal', path: '/nonexistent/path' }), ctx)
-      .catch((e: unknown) => e);
+    const err = await Promise.resolve(
+      macosManageFinder.handler(
+        macosManageFinder.input.parse({ action: 'reveal', path: '/nonexistent/path' }),
+        ctx,
+      ),
+    ).catch((e: unknown) => e);
     expect(err).toMatchObject({ data: { reason: 'path_not_found' } });
     expect((err as Error).message).not.toContain('open -R');
     expect((err as Error).message).not.toContain('Command failed');

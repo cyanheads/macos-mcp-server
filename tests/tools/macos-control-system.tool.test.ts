@@ -6,13 +6,28 @@
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('node:child_process', () => ({
-  execFile: vi.fn((cmd: string, args: string[], _opts: unknown, cb: (err: null) => void) => {
-    void cmd;
-    void args;
+/**
+ * Shape of the mocked `execFile`. Callers wrap it in `promisify`, and the module
+ * mock carries no `util.promisify.custom` hook, so promisify takes the generic
+ * path and resolves with the callback's second argument. That is the contract
+ * these mocks implement — not Node's own `execFile` overloads.
+ */
+type ExecFileMock = (
+  cmd: string,
+  args: string[],
+  opts: unknown,
+  cb: (err: NodeJS.ErrnoException | null, result?: { stdout: string; stderr: string }) => void,
+) => unknown;
+
+const { execFileMock } = vi.hoisted(() => ({
+  execFileMock: vi.fn<ExecFileMock>((_cmd, _args, _opts, cb) => {
     cb(null);
     return { pid: 1 };
   }),
+}));
+
+vi.mock('node:child_process', () => ({
+  execFile: execFileMock,
 }));
 
 vi.mock('@/services/osascript/osascript-service.js', () => ({
@@ -20,7 +35,6 @@ vi.mock('@/services/osascript/osascript-service.js', () => ({
   initOsascriptService: vi.fn(),
 }));
 
-import * as childProcess from 'node:child_process';
 import { macosControlSystem } from '@/mcp-server/tools/definitions/macos-control-system.tool.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 
@@ -35,12 +49,10 @@ describe('macosControlSystem', () => {
   beforeEach(() => {
     vi.mocked(getOsascriptService).mockReturnValue(makeOsascript() as never);
     // Reset execFile mock to succeed by default
-    vi.mocked(childProcess.execFile).mockImplementation(
-      (_cmd: string, _args: string[], _opts: unknown, cb: (err: null) => void) => {
-        cb(null);
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      cb(null);
+      return { pid: 1 };
+    });
   });
 
   it('sleep_display returns success', async () => {
@@ -59,7 +71,7 @@ describe('macosControlSystem', () => {
       macosControlSystem.input.parse({ action: 'sleep_display' }),
       ctx,
     );
-    const calls = vi.mocked(childProcess.execFile).mock.calls;
+    const calls = execFileMock.mock.calls;
     const pmsetCall = calls.find((c) => c[0] === 'pmset');
     expect(pmsetCall).toBeDefined();
     expect(pmsetCall![1]).toContain('displaysleepnow');
@@ -88,12 +100,10 @@ describe('macosControlSystem', () => {
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
 
     // execFile succeeds for ScreenSaverEngine fallback
-    vi.mocked(childProcess.execFile).mockImplementation(
-      (_cmd: string, _args: string[], _opts: unknown, cb: (err: null) => void) => {
-        cb(null);
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      cb(null);
+      return { pid: 1 };
+    });
 
     const ctx = createMockContext();
     const result = await macosControlSystem.handler(
@@ -108,12 +118,10 @@ describe('macosControlSystem', () => {
     svc.runAppleScript.mockRejectedValue(new Error('Accessibility denied'));
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
 
-    vi.mocked(childProcess.execFile).mockImplementation(
-      (_cmd: string, _args: string[], _opts: unknown, cb: (err: Error) => void) => {
-        cb(new Error('binary not found'));
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      cb(new Error('binary not found'));
+      return { pid: 1 };
+    });
 
     const ctx = createMockContext();
     await expect(

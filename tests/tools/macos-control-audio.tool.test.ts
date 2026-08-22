@@ -49,7 +49,7 @@ describe('macosControlAudio', () => {
   });
 
   it('list returns all devices', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosControlAudio.errors });
     const result = await macosControlAudio.handler(
       macosControlAudio.input.parse({ action: 'list' }),
       ctx,
@@ -62,7 +62,7 @@ describe('macosControlAudio', () => {
     const svc = makeAudioService();
     svc.listDevices.mockResolvedValue(mockDevices.filter((d) => d.type === 'output'));
     vi.mocked(getAudioService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosControlAudio.errors });
     const result = await macosControlAudio.handler(
       macosControlAudio.input.parse({ action: 'list', type: 'output' }),
       ctx,
@@ -76,7 +76,7 @@ describe('macosControlAudio', () => {
       .mockResolvedValueOnce('MacBook Pro Speakers') // output
       .mockResolvedValueOnce('MacBook Pro Microphone'); // input
     vi.mocked(getAudioService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosControlAudio.errors });
     const result = await macosControlAudio.handler(
       macosControlAudio.input.parse({ action: 'current' }),
       ctx,
@@ -96,7 +96,7 @@ describe('macosControlAudio', () => {
     const svc = makeAudioService();
     svc.getCurrentDevice.mockResolvedValue('External Headphones');
     vi.mocked(getAudioService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosControlAudio.errors });
     const result = await macosControlAudio.handler(
       macosControlAudio.input.parse({ action: 'switch_output', device: 'Headphones' }),
       ctx,

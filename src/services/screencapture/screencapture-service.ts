@@ -83,11 +83,11 @@ async function getImageDimensions(filePath: string): Promise<{ width: number; he
       timeout: 10_000,
     });
     const out = result.stdout ?? '';
-    const wMatch = out.match(/pixelWidth:\s*(\d+)/);
-    const hMatch = out.match(/pixelHeight:\s*(\d+)/);
+    const width = out.match(/pixelWidth:\s*(\d+)/)?.[1];
+    const height = out.match(/pixelHeight:\s*(\d+)/)?.[1];
     return {
-      width: wMatch ? parseInt(wMatch[1]!, 10) : 0,
-      height: hMatch ? parseInt(hMatch[1]!, 10) : 0,
+      width: width ? parseInt(width, 10) : 0,
+      height: height ? parseInt(height, 10) : 0,
     };
   } catch {
     return { width: 0, height: 0 };

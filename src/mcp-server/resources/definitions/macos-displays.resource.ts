@@ -35,6 +35,6 @@ export const macosDisplaysResource = resource('macos://displays', {
   }),
 
   async handler(_params, ctx) {
-    return getDisplayService().listDisplays(ctx);
+    return await getDisplayService().listDisplays(ctx);
   },
 });

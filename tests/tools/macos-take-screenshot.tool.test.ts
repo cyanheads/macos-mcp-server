@@ -43,7 +43,7 @@ describe('macosTakeScreenshot', () => {
   });
 
   it('captures full screen and returns path and dimensions', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosTakeScreenshot.errors });
     const result = await macosTakeScreenshot.handler(
       macosTakeScreenshot.input.parse({ target: 'screen' }),
       ctx,
@@ -56,7 +56,7 @@ describe('macosTakeScreenshot', () => {
   it('passes include_data=true to service', async () => {
     const svc = makeScreencaptureService(mockResultWithPreview);
     vi.mocked(getScreencaptureService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosTakeScreenshot.errors });
     const result = await macosTakeScreenshot.handler(
       macosTakeScreenshot.input.parse({ target: 'screen', include_data: true }),
       ctx,
@@ -69,7 +69,7 @@ describe('macosTakeScreenshot', () => {
   it('only passes defined optional fields to service', async () => {
     const svc = makeScreencaptureService();
     vi.mocked(getScreencaptureService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosTakeScreenshot.errors });
     await macosTakeScreenshot.handler(
       macosTakeScreenshot.input.parse({ target: 'display', display_index: 1 }),
       ctx,
@@ -82,7 +82,7 @@ describe('macosTakeScreenshot', () => {
   it('passes app_name for window target', async () => {
     const svc = makeScreencaptureService();
     vi.mocked(getScreencaptureService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosTakeScreenshot.errors });
     await macosTakeScreenshot.handler(
       macosTakeScreenshot.input.parse({ target: 'window', app_name: 'Safari' }),
       ctx,

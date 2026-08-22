@@ -63,7 +63,7 @@ describe('macosManageWindows', () => {
   });
 
   it('list returns all visible windows', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageWindows.errors });
     const result = await macosManageWindows.handler(
       macosManageWindows.input.parse({ action: 'list' }),
       ctx,
@@ -76,7 +76,7 @@ describe('macosManageWindows', () => {
 
   it('list returns empty array when no windows', async () => {
     vi.mocked(getOsascriptService).mockReturnValue(makeOsascript('[]') as never);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageWindows.errors });
     const result = await macosManageWindows.handler(
       macosManageWindows.input.parse({ action: 'list' }),
       ctx,
@@ -275,7 +275,7 @@ describe('macosManageWindows', () => {
     vi.mocked(getOsascriptService).mockReturnValue(
       makeOsascript(JSON.stringify(unicodeWindows)) as never,
     );
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: macosManageWindows.errors });
     const result = await macosManageWindows.handler(
       macosManageWindows.input.parse({ action: 'list' }),
       ctx,

@@ -31,11 +31,28 @@ vi.mock('@/services/osascript/osascript-service.js', () => ({
   initOsascriptService: vi.fn(),
 }));
 
-vi.mock('node:child_process', () => ({
-  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: null) => void) => {
+/**
+ * Shape of the mocked `execFile`. Callers wrap it in `promisify`, and the module
+ * mock carries no `util.promisify.custom` hook, so promisify takes the generic
+ * path and resolves with the callback's second argument. That is the contract
+ * these mocks implement — not Node's own `execFile` overloads.
+ */
+type ExecFileMock = (
+  cmd: string,
+  args: string[],
+  opts: unknown,
+  cb: (err: NodeJS.ErrnoException | null, result?: { stdout: string; stderr: string }) => void,
+) => unknown;
+
+const { execFileMock } = vi.hoisted(() => ({
+  execFileMock: vi.fn<ExecFileMock>((_cmd, _args, _opts, cb) => {
     cb(null);
     return { pid: 1 };
   }),
+}));
+
+vi.mock('node:child_process', () => ({
+  execFile: execFileMock,
 }));
 
 vi.mock('@/services/audio/audio-service.js', () => ({
@@ -52,7 +69,6 @@ vi.mock('@/config/server-config.js', () => ({
   getServerConfig: vi.fn().mockReturnValue({ screenshotDir: '/tmp', displayLayouts: '{}' }),
 }));
 
-import * as childProcess from 'node:child_process';
 import { macosControlAudio } from '@/mcp-server/tools/definitions/macos-control-audio.tool.js';
 import { macosManageApps } from '@/mcp-server/tools/definitions/macos-manage-apps.tool.js';
 import { macosManageFinder } from '@/mcp-server/tools/definitions/macos-manage-finder.tool.js';
@@ -151,12 +167,10 @@ describe('Injection safety: macos_manage_apps (app_name)', () => {
   beforeEach(() => {
     svc = makeOsascript();
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    vi.mocked(childProcess.execFile).mockImplementation(
-      (_cmd: string, _args: string[], _opts: unknown, cb: (err: null) => void) => {
-        cb(null);
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      cb(null);
+      return { pid: 1 };
+    });
   });
 
   afterEach(() => {
@@ -189,7 +203,7 @@ describe('Injection safety: macos_manage_apps (app_name)', () => {
       }
       // When execFile('open', ['-a', appName]) is used, the payload must be a
       // single discrete argv element (no shell interpretation possible).
-      const execCalls = vi.mocked(childProcess.execFile).mock.calls;
+      const execCalls = execFileMock.mock.calls;
       for (const call of execCalls) {
         const args = call[1] as string[];
         // The payload, if present, must appear as a whole argv element — not split or concatenated
@@ -259,12 +273,10 @@ describe('Injection safety: macos_manage_finder (path, app_name)', () => {
   beforeEach(() => {
     svc = makeOsascript();
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    vi.mocked(childProcess.execFile).mockImplementation(
-      (_cmd: string, _args: string[], _opts: unknown, cb: (err: null) => void) => {
-        cb(null);
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      cb(null);
+      return { pid: 1 };
+    });
   });
 
   afterEach(() => {
@@ -285,7 +297,7 @@ describe('Injection safety: macos_manage_finder (path, app_name)', () => {
         // Acceptable
       }
       // execFile('open', ['-R', path]) — path must be the last discrete argv element
-      const execCalls = vi.mocked(childProcess.execFile).mock.calls;
+      const execCalls = execFileMock.mock.calls;
       for (const call of execCalls) {
         const args = call[1] as string[];
         for (const arg of args) {
@@ -325,7 +337,7 @@ describe('Injection safety: macos_manage_finder (path, app_name)', () => {
         // Acceptable
       }
       // execFile('open', ['-a', appName, path]) — appName must be a discrete argv element
-      const execCalls = vi.mocked(childProcess.execFile).mock.calls;
+      const execCalls = execFileMock.mock.calls;
       for (const call of execCalls) {
         const args = call[1] as string[];
         for (const arg of args) {
@@ -379,12 +391,10 @@ describe('Injection safety: macos_take_screenshot (path, app_name)', () => {
 
 describe('Injection safety: macos_manage_focus (mode)', () => {
   beforeEach(() => {
-    vi.mocked(childProcess.execFile).mockImplementation(
-      (_cmd: string, _args: string[], _opts: unknown, cb: (err: null) => void) => {
-        cb(null);
-        return { pid: 1 } as never;
-      },
-    );
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      cb(null);
+      return { pid: 1 };
+    });
   });
 
   afterEach(() => {
@@ -405,7 +415,7 @@ describe('Injection safety: macos_manage_focus (mode)', () => {
       // shortcuts CLI is called as: execFile('/usr/bin/shortcuts', ['run', 'Set Focus', '-i', '-'])
       // The mode name is passed via stdin (the '-i', '-' flags), NOT as an argv element.
       // Verify the payload does not appear as any argv element in shortcuts calls.
-      const execCalls = vi.mocked(childProcess.execFile).mock.calls;
+      const execCalls = execFileMock.mock.calls;
       const shortcutsCalls = execCalls.filter((c) => {
         const cmd = c[0] as string;
         return cmd === '/usr/bin/shortcuts' || cmd === 'shortcuts';
@@ -459,7 +469,7 @@ describe('Injection safety: macos_control_audio (device) — service-level valid
       ).rejects.toMatchObject({ data: { reason: 'device_not_found' } });
 
       // execFile must NOT have been called with the payload — validation rejected it first
-      const execCalls = vi.mocked(childProcess.execFile).mock.calls;
+      const execCalls = execFileMock.mock.calls;
       for (const call of execCalls) {
         const args = call[1] as string[];
         expect(args).not.toContain(payload);
