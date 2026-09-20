@@ -21,7 +21,9 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "MACOS_SCREENSHOT_DIR": "${user_config.MACOS_SCREENSHOT_DIR}",
+        "MACOS_DISPLAY_LAYOUTS": "${user_config.MACOS_DISPLAY_LAYOUTS}"
       }
     }
   },
@@ -37,13 +39,15 @@
       "title": "Screenshot Directory",
       "description": "Default directory for screenshot files. Defaults to ~/Desktop when empty.",
       "type": "string",
-      "required": false
+      "required": false,
+      "default": ""
     },
     "MACOS_DISPLAY_LAYOUTS": {
       "title": "Display Layouts",
       "description": "JSON object mapping layout names to displayplacer argument strings for apply_layout.",
       "type": "string",
-      "required": false
+      "required": false,
+      "default": ""
     }
   }
 }
