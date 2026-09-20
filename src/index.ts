@@ -33,6 +33,13 @@ import { initSystemInfoService } from './services/system-info/system-info-servic
 await createApp({
   name: 'macos-mcp-server',
   title: 'macos-mcp-server',
+  /**
+   * No tool gates on ctx.requestInput and no handler keeps per-session state,
+   * so the HTTP transport has nothing to carry between calls. Declared here
+   * rather than left to MCP_SESSION_MODE so the posture travels with the code
+   * on every launch path; the env var still overrides when set.
+   */
+  sessionMode: 'stateless',
   tools: [
     macosGetInfo,
     macosCheckPermissions,
