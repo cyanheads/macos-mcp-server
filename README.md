@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/macos-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/macos-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/macos-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/macos-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -23,194 +23,193 @@
 
 ---
 
-## Tools
+## Overview
 
-13 tools covering macOS system state, app and window management, audio routing, display control, screenshots, Finder integration, notifications, and Focus mode:
+macOS system control — application lifecycle, window management, audio and display routing, screenshots, Finder integration, notifications, and Focus mode. Launch, quit, and arrange apps and windows, switch audio devices, capture screenshots, and toggle Focus mode from any MCP client. Runs as a stdio process or a local Streamable HTTP server.
+
+### Tools
 
 | Tool | Description |
 |:-----|:------------|
 | `macos_get_info` | System snapshot: battery level and charging status, power source, Wi-Fi SSID, hostname, macOS version, uptime, and display count |
-| `macos_check_permissions` | Reports Accessibility, Screen Recording, Automation > Finder, and Notification status for the calling process |
-| `macos_manage_apps` | List, launch, quit, force-quit, hide, or show applications |
-| `macos_manage_windows` | List, focus, move, resize, move_resize, minimize, fullscreen, or close windows |
+| `macos_check_permissions` | Reports Accessibility, Screen Recording, Automation > Finder, and Notification permission status for the calling process |
+| `macos_manage_apps` | List running apps, get the frontmost app, launch, quit, force-quit, hide, or show applications |
+| `macos_manage_windows` | List, focus, move, resize, move_resize, minimize, fullscreen, or close windows across all visible apps |
 | `macos_control_volume` | Get or set system output volume (0–100) and mute state |
 | `macos_control_audio` | List audio devices, get current defaults, or switch the default input/output device |
 | `macos_control_appearance` | Get or set dark/light mode |
 | `macos_control_system` | Lock the screen or put the display to sleep |
-| `macos_take_screenshot` | Capture full screen, display, named app window, or pixel region; saves PNG; optional base64 JPEG preview |
+| `macos_take_screenshot` | Capture full screen, display, named app window, or pixel region; saves PNG, optional base64 JPEG preview |
 | `macos_manage_displays` | List connected displays and apply named display layout presets |
 | `macos_send_notification` | Post a notification to macOS Notification Center |
 | `macos_manage_focus` | Get or set Do Not Disturb / Focus mode |
 | `macos_manage_finder` | Frontmost path, current selection, reveal, open with app, or move to Trash |
 
-### `macos_get_info`
+### Resources
 
-Returns a live system snapshot with no prerequisites.
+| Resource | Description |
+|:-----|:------------|
+| `macos://system/info` | Current macOS system snapshot: battery, power source, Wi-Fi SSID, hostname, version, uptime, display count |
+| `macos://audio/devices` | All audio input and output devices, including which is the current default. Requires SwitchAudioSource CLI. |
+| `macos://displays` | Connected display inventory including persistent IDs, type, resolution, origin, rotation, scaling, and enabled state. Requires displayplacer CLI. |
+
+Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`action=list`), and `macos_manage_displays` (`action=list`).
+
+## Capability reference
+
+### `macos_get_info` <sub>tool</sub>
 
 - Battery level (0–100), charging state, and power source (`AC`, `Battery`, `UPS`); `null` on desktops with no battery
 - Wi-Fi connection status and SSID
 - Hostname, macOS version string (e.g. `"15.1.0"`), uptime in seconds
 - Connected display count
+- No permissions required
 
 ---
 
-### `macos_check_permissions`
+### `macos_check_permissions` <sub>tool</sub>
 
-Reports permission status for each capability this server exercises. Run this first when debugging why a tool is failing.
-
-- **Accessibility** — required for window manipulation (`move`, `resize`, `minimize`, `fullscreen`, `close`), app hide/show
-- **Screen Recording** — required for window screenshots (`macos_take_screenshot` with `target=window`)
-- **Automation > Finder** — required for `macos_manage_finder` with `action=get_selection`
-- **Notifications** — always granted (osascript notifications bypass Do Not Disturb)
-- Returns the name of the calling process (e.g. `"ghostty"`, `"node"`) so you know which process to grant permissions for
+- Reports **Accessibility** (window manipulation, app hide/show), **Screen Recording** (window screenshots), **Automation > Finder** (Finder selection), and **Notifications** (always granted — osascript bypasses Do Not Disturb)
+- Returns the calling process name (e.g. `"ghostty"`, `"node"`) so you know which process to grant permissions for
+- Read-only — checks status without triggering an OS permission prompt
+- Run this first when debugging why another tool is failing
 
 ---
 
-### `macos_manage_apps`
+### `macos_manage_apps` <sub>tool</sub>
 
-Manage the lifecycle of user-facing applications.
-
-- `list` — all running user-facing apps with name, bundle ID, PID, visible, and frontmost flags
+- `list` — running user-facing apps with name, bundle ID, PID, visible, and frontmost flags
 - `frontmost` — name, bundle ID, PID, and frontmost window title of the active app
-- `launch` — open or activate an app by name or bundle ID; `hidden=true` starts in the background
-- `quit` — graceful quit via AppleScript `tell application … to quit`
-- `force_quit` — SIGKILL without saving
-- `hide` / `show` — toggle app visibility; requires Accessibility
+- `launch` — open or activate by `app_name` or `bundle_id`; `hidden=true` starts in the background
+- `quit` (graceful AppleScript quit) vs. `force_quit` (SIGKILL, no save prompt)
+- `hide` / `show` — toggle visibility; requires Accessibility
+- Typed errors: `app_not_found`, `not_running`, `accessibility_required`
 
 ---
 
-### `macos_manage_windows`
+### `macos_manage_windows` <sub>tool</sub>
 
-Window operations across all visible apps via System Events Accessibility.
-
-- `list` — all visible windows with app name, title, position, size, minimized state, and display index (0 = primary)
-- `focus` — bring an app or window to the foreground (does not require Accessibility)
-- `move` — reposition a window by top-left coordinate
-- `resize` — change a window's width and height
-- `move_resize` — set position and size in one call
-- `minimize` — minimize to Dock or restore; `minimized=true` to minimize, `false` to restore
-- `fullscreen` — toggle fullscreen via ⌃⌘F keystroke
-- `close` — click the close button via Accessibility
-- Target by `app_name`, `window_title`, or both (`window_title` takes precedence)
-- All mutating actions (everything except `list` and `focus`) require Accessibility
+- `list` — all visible windows across apps, with position, size, minimized state, and 0-based `display_index`
+- `focus`, `move`, `resize`, `move_resize`, `minimize`, `fullscreen`, `close` — target by `app_name` or exact `window_title` (title takes precedence when both are given)
+- `list` and `focus` require no permissions; every other action requires Accessibility
+- Typed errors: `window_not_found`, `accessibility_required`
 
 ---
 
-### `macos_control_volume`
+### `macos_control_volume` <sub>tool</sub>
 
-- `get` — returns current output volume (0–100) and mute state
-- `set` — accepts `level` (0–100), `muted` (true/false), or both; setting `level=0` does not mute
+- `get` — current output volume (0–100) and mute state
+- `set` — accepts `level` (0–100), `muted`, or both; `level=0` does not mute
 - Always returns current state after a `set`
 
 ---
 
-### `macos_control_audio`
+### `macos_control_audio` <sub>tool</sub>
 
-Audio device routing via SwitchAudioSource CLI (`brew install switchaudio-osx`).
-
-- `list` — all input and output devices, with `is_default` flag; filter by `type=input|output|all`
-- `current` — current default input and output device names
-- `switch_output` / `switch_input` — change the default device; supports case-insensitive partial name matching (`"MacBook"` matches `"MacBook Pro Microphone"`)
-- Volume level control is separate (`macos_control_volume`)
+- `list` — all input/output devices with an `is_default` flag; filter with `type`
+- `current` — default input and output device names
+- `switch_output` / `switch_input` — case-insensitive partial name match (`"MacBook"` matches `"MacBook Pro Microphone"`)
+- Volume level is separate (`macos_control_volume`)
+- Requires SwitchAudioSource CLI (`brew install switchaudio-osx`); typed errors `device_not_found`, `switchaudio_unavailable`
 
 ---
 
-### `macos_control_appearance`
+### `macos_control_appearance` <sub>tool</sub>
 
 - `get` — returns `dark_mode: true/false`
-- `set` with `mode=dark|light|toggle` — `dark`/`light` are idempotent; `toggle` flips on each call
+- `set` with `mode: "dark" | "light" | "toggle"` — `dark`/`light` are idempotent, `toggle` flips on each call
 
 ---
 
-### `macos_control_system`
+### `macos_control_system` <sub>tool</sub>
 
-- `lock` — locks the screen immediately via ⌃⌘Q (Accessibility); falls back to ScreenSaverEngine binary if Accessibility is not granted
-- `sleep_display` — puts all displays to sleep via `pmset displaysleepnow`; no permissions required
-
----
-
-### `macos_take_screenshot`
-
-Saves a full-resolution PNG to disk; optionally returns a downscaled JPEG preview as base64.
-
-- `screen` — full screen capture (all displays merged); no Screen Recording required
-- `display` — a specific display by 0-based `display_index`; no Screen Recording required
-- `window` — a named app window by `app_name`; **requires Screen Recording**
-- `region` — a pixel rectangle `{ x, y, width, height }`; no Screen Recording required
-- `path` — custom output path (must be within `~/Desktop`, `/tmp`, or home dir); defaults to `MACOS_SCREENSHOT_DIR/<timestamp>.png` (falls back to `~/Desktop`)
-- `include_data=true` — adds `preview` (base64 JPEG, max 1024px wide, ~70% quality) + `preview_width` / `preview_height` to the response for agent visual analysis
+- `lock` — ⌃⌘Q via Accessibility; falls back to the ScreenSaverEngine binary when Accessibility isn't granted
+- `sleep_display` — `pmset displaysleepnow`; no permissions required
+- Both operations are immediate and reversible with any input (wake/unlock)
 
 ---
 
-### `macos_manage_displays`
+### `macos_take_screenshot` <sub>tool</sub>
 
-Requires displayplacer CLI (`brew install jakehilborn/jakehilborn/displayplacer`).
-
-- `list` — connected display inventory: persistent ID, connection type, resolution, refresh rate, origin, rotation, scaling, enabled state; plus `current_config` (a displayplacer command string that reproduces the active arrangement)
-- `apply_layout` — activates a named preset from `MACOS_DISPLAY_LAYOUTS`; layout names are pre-configured in the env var — raw displayplacer args are never accepted from the user
-
----
-
-### `macos_send_notification`
-
-Posts to Notification Center via osascript. Does not require notification permission — osascript notifications bypass Do Not Disturb.
-
-- `title` (required), `body`, `subtitle`, `sound=true` (plays default notification sound)
-- Each call creates a new notification; not idempotent
+- `target`: `screen`, `display` (0-based `display_index`), `region` (pixel rect) — no Screen Recording required; `window` (by `app_name`) requires Screen Recording
+- Always saves a full-resolution PNG; `path` defaults to `MACOS_SCREENSHOT_DIR/<timestamp>.png`, falling back to `~/Desktop`; a custom `path` must be within `~/Desktop`, `/tmp`, or the home directory
+- `include_data=true` adds a base64 JPEG `preview` (max 1024px wide, ~70% quality) plus `preview_width`/`preview_height`
+- Typed errors: `screen_recording_required`, `window_not_found`, `display_not_found`, `path_not_writable`
 
 ---
 
-### `macos_manage_focus`
+### `macos_manage_displays` <sub>tool</sub>
 
-- `get` — best-effort: reads `~/Library/DoNotDisturb/DB/Assertions.json` when accessible; returns `status: active|inactive|unknown`; `unknown` is expected on macOS 13+ where the database is SIP-protected
-- `set` — requires the built-in `"Set Focus"` shortcut to exist in Shortcuts.app (present by default on macOS 12+); `mode` must match a configured Focus profile exactly (e.g. `"Do Not Disturb"`, `"Work"`); `enabled` defaults to `true`
+- `list` — persistent ID, connection type, resolution, refresh rate, origin, rotation, scaling, and enabled state, plus `current_config` (a displayplacer command that reproduces the active arrangement)
+- `apply_layout` — activates a named preset from `MACOS_DISPLAY_LAYOUTS`; raw displayplacer args are never accepted from the caller
+- Requires displayplacer CLI (`brew install jakehilborn/jakehilborn/displayplacer`); typed errors `displayplacer_not_found`, `layout_not_found`
 
 ---
 
-### `macos_manage_finder`
+### `macos_send_notification` <sub>tool</sub>
 
-Finder integration via osascript and `open`.
+- `title` required; `body`, `subtitle`, and `sound=true` (default notification sound) are optional
+- Each call creates a new notification — not idempotent
+- Bypasses Do Not Disturb; no permission required
 
-- `frontmost_path` — POSIX path of the active Finder window, or `null` when no window is open; no permissions required
+---
+
+### `macos_manage_focus` <sub>tool</sub>
+
+- `get` — best-effort; reads the Focus assertion database when accessible, returns `status: "active" | "inactive" | "unknown"`; `unknown` is expected on macOS 13+ where the database is SIP-protected
+- `set` — requires the built-in `"Set Focus"` shortcut in Shortcuts.app (present by default on macOS 12+); `mode` must exactly match a configured Focus profile (e.g. `"Do Not Disturb"`, `"Work"`); `enabled` defaults to `true`
+- Typed errors: `shortcuts_unavailable`, `focus_not_found`
+
+---
+
+### `macos_manage_finder` <sub>tool</sub>
+
+- `frontmost_path` — POSIX path of the active Finder window, or `null` when none is open; no permissions required
 - `get_selection` — POSIX paths of selected items; requires Automation > Finder permission
-- `reveal` — highlight a path in Finder (`open -R path`)
-- `open_with` — open a path with a named app (`open -a AppName path`)
-- `trash` — moves a path to the Trash (recoverable); not a permanent delete
+- `reveal` (`open -R`), `open_with` (`open -a <App>`), `trash` (moves to Trash — recoverable, not permanent delete)
+- Typed errors: `finder_not_open`, `path_not_found`, `accessibility_required`
 
-## Resources
+---
 
-| Type | Name | Description |
-|:-----|:-----|:------------|
-| Resource | `macos://system/info` | Current macOS system snapshot: battery, power source, Wi-Fi SSID, hostname, version, uptime, display count |
-| Resource | `macos://audio/devices` | All audio input and output devices, including which is the current default. Requires SwitchAudioSource CLI. |
-| Resource | `macos://displays` | Connected display inventory including persistent IDs, type, resolution, origin, rotation, scaling, and enabled state. Requires displayplacer CLI. |
+### `macos://system/info` <sub>resource</sub>
 
-Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`action=list`), and `macos_manage_displays` (`action=list`).
+- Current macOS system snapshot as `application/json` — battery, power source, Wi-Fi SSID, hostname, version, uptime, display count
+- Same data is also reachable via `macos_get_info`
+
+---
+
+### `macos://audio/devices` <sub>resource</sub>
+
+- All audio input and output devices, including which is the current default, as `application/json`
+- Requires SwitchAudioSource CLI
+- Same data is also reachable via `macos_control_audio` (`action=list`)
+
+---
+
+### `macos://displays` <sub>resource</sub>
+
+- Connected display inventory — persistent IDs, type, resolution, origin, rotation, scaling, enabled state, plus `current_config` — as `application/json`
+- Requires displayplacer CLI
+- Same data is also reachable via `macos_manage_displays` (`action=list`)
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core):
-
-- Declarative tool and resource definitions — single file per primitive, framework handles registration and validation
-- Unified error handling — handlers throw, framework catches, classifies, and formats with structured recovery hints
-- Structured logging with optional OpenTelemetry tracing
-- STDIO and Streamable HTTP transports
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
 macOS-specific:
 
-- osascript service with configurable timeout — wraps both JXA (`runJxa`) and AppleScript (`runAppleScript`)
-- SwitchAudioSource integration for audio device routing (optional dependency — graceful error when absent)
-- displayplacer integration for display management and layout presets (optional dependency — graceful error when absent)
-- screencapture + sips pipeline for PNG capture and JPEG preview generation
-- system_profiler, pmset, and networksetup for hardware state
-- Permission-first design — `macos_check_permissions` tells you exactly which process needs which permission before you hit a `Forbidden` error
+- osascript service wraps both JXA (`runJxa`) and AppleScript (`runAppleScript`) with a configurable timeout
+- SwitchAudioSource and displayplacer integrations are optional dependencies — the affected tools fail with `ServiceUnavailable` and an install instruction when the CLI is absent
+- screencapture + sips pipeline for full-resolution PNG capture and downscaled JPEG preview generation
+- system_profiler, pmset, and networksetup for hardware, battery, and Wi-Fi state
+- Permission-first design — `macos_check_permissions` reports exactly which process needs which grant before a tool hits `Forbidden`
 
 Agent-friendly output:
 
-- Permission errors include specific grant instructions (`System Settings > Privacy & Security > [permission type]`)
-- Optional CLI tools (`SwitchAudioSource`, `displayplacer`) surface `ServiceUnavailable` with install instructions (`brew install …`)
-- `macos_manage_windows action=list` includes `display_index` on every window so agents can reason about multi-monitor layouts
-- `macos_take_screenshot` separates full-resolution disk write from optional base64 preview — keeps response size manageable
+- Permission errors carry specific grant instructions (`System Settings > Privacy & Security > [permission type]`)
+- Optional CLI dependencies surface `ServiceUnavailable` with the exact `brew install` command needed
+- `macos_manage_windows action=list` reports `display_index` on every window so agents can reason about multi-monitor layouts
+- `macos_take_screenshot` separates the full-resolution disk write from an optional base64 preview, keeping response size manageable
 
 ## Getting started
 
@@ -252,10 +251,17 @@ Or with npx (no Bun required):
 }
 ```
 
+For Streamable HTTP, set the transport and start the server:
+
+```sh
+MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
+# Server listens at http://localhost:3010/mcp
+```
+
 ### Prerequisites
 
 - macOS 12 (Monterey) or higher.
-- [Bun v1.3.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
 - Optional: [SwitchAudioSource](https://github.com/deweller/switchaudio-osx) for audio routing (`brew install switchaudio-osx`).
 - Optional: [displayplacer](https://github.com/jakehilborn/displayplacer) for display management (`brew install jakehilborn/jakehilborn/displayplacer`).
 
@@ -306,6 +312,7 @@ cp .env.example .env
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level. | `info` |
+| `MCP_SESSION_MODE` | Session storage: `auto`, `stateful`, or `stateless` (HTTP only). This server holds no per-session state, so `.env.example` sets `stateless` explicitly. | `auto` (`.env.example` sets `stateless`) |
 | `OTEL_ENABLED` | Enable OpenTelemetry instrumentation. | `false` |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
@@ -337,19 +344,10 @@ bun run test       # Vitest test suite
 bun run lint:mcp   # Validate MCP definitions against spec
 ```
 
-### Docker
-
-```sh
-docker build -t macos-mcp-server .
-docker run --rm -p 3010:3010 macos-mcp-server
-```
-
-The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/macos-mcp-server`. Note: the Docker image cannot exercise osascript or system CLI tools — it is provided for completeness but has limited utility for this server.
-
 ## Project structure
 
-| Path | Purpose |
-|:-----|:--------|
+| Directory | Purpose |
+|:----------|:--------|
 | `src/index.ts` | `createApp()` entry — registers tools/resources and inits services |
 | `src/config/server-config.ts` | `MACOS_SCREENSHOT_DIR` and `MACOS_DISPLAY_LAYOUTS` env parsing |
 | `src/mcp-server/tools/definitions/` | 13 tool definitions (`macos-*.tool.ts`) |
@@ -367,12 +365,12 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for request-scoped logging; no `console` calls
-- All tool names are prefixed `macos_` and use snake_case; file names are `macos-*.tool.ts`
+- Read actual system/CLI state and never fabricate it — return `null` or `unknown` when the OS can't answer (e.g. battery on desktops, Focus status under SIP protection) rather than guessing
 - Services are singletons initialized in `createApp()` and accessed via `get*Service()` accessors
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck
