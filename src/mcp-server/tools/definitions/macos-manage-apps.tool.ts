@@ -101,6 +101,7 @@ export const macosManageApps = tool('macos_manage_apps', {
       when: 'hide or show called without Accessibility permission.',
       recovery:
         'Grant Accessibility in System Settings > Privacy & Security > Accessibility for your terminal or MCP host app.',
+      thrownBy: 'service',
     },
   ],
 
@@ -164,7 +165,12 @@ export const macosManageApps = tool('macos_manage_apps', {
           pid: number;
           windowTitle: string | null;
         } | null;
-        if (!raw) throw ctx.fail('app_not_found', 'No frontmost application found');
+        if (!raw)
+          throw ctx.fail(
+            'app_not_found',
+            'No frontmost application found',
+            ctx.recoveryFor('app_not_found'),
+          );
         return {
           action: 'frontmost',
           app: {
@@ -217,7 +223,12 @@ export const macosManageApps = tool('macos_manage_apps', {
 
       case 'quit': {
         const name = input.app_name;
-        if (!name) throw ctx.fail('not_running', 'app_name is required for quit');
+        if (!name)
+          throw ctx.fail(
+            'not_running',
+            'app_name is required for quit',
+            ctx.recoveryFor('not_running'),
+          );
         const escaped = JSON.stringify(name);
         try {
           await osascript.runAppleScript(`tell application ${escaped} to quit`, ctx, {
@@ -227,7 +238,11 @@ export const macosManageApps = tool('macos_manage_apps', {
           const e = err as { message?: string };
           const msg = e.message ?? '';
           if (msg.includes('not found') || msg.includes("can't get")) {
-            throw ctx.fail('not_running', `"${name}" is not running`);
+            throw ctx.fail(
+              'not_running',
+              `"${name}" is not running`,
+              ctx.recoveryFor('not_running'),
+            );
           }
           throw err;
         }
@@ -236,7 +251,12 @@ export const macosManageApps = tool('macos_manage_apps', {
 
       case 'force_quit': {
         const name = input.app_name;
-        if (!name) throw ctx.fail('not_running', 'app_name is required for force_quit');
+        if (!name)
+          throw ctx.fail(
+            'not_running',
+            'app_name is required for force_quit',
+            ctx.recoveryFor('not_running'),
+          );
         const { stdout: listOut } = await osascript.runJxa(
           `
             const se = Application("System Events");
@@ -246,7 +266,8 @@ export const macosManageApps = tool('macos_manage_apps', {
           ctx,
         );
         const procs: Array<{ name: string; pid: number }> = JSON.parse(listOut || '[]');
-        if (procs.length === 0) throw ctx.fail('not_running', `"${name}" is not running`);
+        if (procs.length === 0)
+          throw ctx.fail('not_running', `"${name}" is not running`, ctx.recoveryFor('not_running'));
         const pid = procs[0]?.pid;
         await execFile('kill', ['-9', String(pid)], { timeout: 5_000 });
         ctx.log.info('macos_manage_apps force_quit', { app: name, pid });
@@ -255,7 +276,12 @@ export const macosManageApps = tool('macos_manage_apps', {
 
       case 'hide': {
         const name = input.app_name;
-        if (!name) throw ctx.fail('not_running', 'app_name is required for hide');
+        if (!name)
+          throw ctx.fail(
+            'not_running',
+            'app_name is required for hide',
+            ctx.recoveryFor('not_running'),
+          );
         const escaped = JSON.stringify(name);
         await osascript
           .runJxa(
@@ -270,7 +296,11 @@ export const macosManageApps = tool('macos_manage_apps', {
           .catch((err: unknown) => {
             const e = err as { message?: string };
             if (e.message?.includes('not_running'))
-              throw ctx.fail('not_running', `"${name}" is not running`);
+              throw ctx.fail(
+                'not_running',
+                `"${name}" is not running`,
+                ctx.recoveryFor('not_running'),
+              );
             throw err;
           });
         return { action: 'hide', success: true, app_name: name };
@@ -278,7 +308,12 @@ export const macosManageApps = tool('macos_manage_apps', {
 
       case 'show': {
         const name = input.app_name;
-        if (!name) throw ctx.fail('not_running', 'app_name is required for show');
+        if (!name)
+          throw ctx.fail(
+            'not_running',
+            'app_name is required for show',
+            ctx.recoveryFor('not_running'),
+          );
         const escaped = JSON.stringify(name);
         await osascript
           .runJxa(
@@ -294,7 +329,11 @@ export const macosManageApps = tool('macos_manage_apps', {
           .catch((err: unknown) => {
             const e = err as { message?: string };
             if (e.message?.includes('not_running'))
-              throw ctx.fail('not_running', `"${name}" is not running`);
+              throw ctx.fail(
+                'not_running',
+                `"${name}" is not running`,
+                ctx.recoveryFor('not_running'),
+              );
             throw err;
           });
         return { action: 'show', success: true, app_name: name };

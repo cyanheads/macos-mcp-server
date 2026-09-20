@@ -154,7 +154,11 @@ export const macosManageFocus = tool('macos_manage_focus', {
       const msg = (e.message ?? e.stderr ?? '').toLowerCase();
 
       if (e.code === 'ENOENT') {
-        throw ctx.fail('shortcuts_unavailable', 'shortcuts CLI not found at /usr/bin/shortcuts');
+        throw ctx.fail(
+          'shortcuts_unavailable',
+          'shortcuts CLI not found at /usr/bin/shortcuts',
+          ctx.recoveryFor('shortcuts_unavailable'),
+        );
       }
       if (
         msg.includes('not a shortcut') ||
@@ -164,6 +168,7 @@ export const macosManageFocus = tool('macos_manage_focus', {
         throw ctx.fail(
           'shortcuts_unavailable',
           'The "Set Focus" shortcut is not installed in the Shortcuts app',
+          ctx.recoveryFor('shortcuts_unavailable'),
         );
       }
       // Any other failure (including timeout on unknown mode or general exit) is a mode name mismatch

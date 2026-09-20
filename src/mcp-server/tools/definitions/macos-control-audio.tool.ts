@@ -78,6 +78,7 @@ export const macosControlAudio = tool('macos_control_audio', {
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: 'SwitchAudioSource CLI is not installed at /opt/homebrew/bin/SwitchAudioSource.',
       recovery: 'Install with: brew install switchaudio-osx',
+      thrownBy: 'service',
     },
   ],
 
@@ -105,7 +106,11 @@ export const macosControlAudio = tool('macos_control_audio', {
 
       case 'switch_output': {
         if (!input.device)
-          throw ctx.fail('device_not_found', 'device is required for switch_output');
+          throw ctx.fail(
+            'device_not_found',
+            'device is required for switch_output',
+            ctx.recoveryFor('device_not_found'),
+          );
         await svc.switchDevice(input.device, 'output', ctx);
         const newDefault = await svc.getCurrentDevice('output', ctx);
         ctx.log.info('macos_control_audio switch_output', { device: newDefault });
@@ -118,7 +123,11 @@ export const macosControlAudio = tool('macos_control_audio', {
 
       case 'switch_input': {
         if (!input.device)
-          throw ctx.fail('device_not_found', 'device is required for switch_input');
+          throw ctx.fail(
+            'device_not_found',
+            'device is required for switch_input',
+            ctx.recoveryFor('device_not_found'),
+          );
         await svc.switchDevice(input.device, 'input', ctx);
         const newDefault = await svc.getCurrentDevice('input', ctx);
         ctx.log.info('macos_control_audio switch_input', { device: newDefault });

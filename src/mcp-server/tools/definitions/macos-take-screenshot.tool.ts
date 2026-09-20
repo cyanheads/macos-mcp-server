@@ -77,24 +77,28 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
       when: 'target=window called without Screen Recording permission.',
       recovery:
         'Grant Screen Recording in System Settings > Privacy & Security > Screen Recording for your terminal or MCP host app.',
+      thrownBy: 'service',
     },
     {
       reason: 'window_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'No visible window for the named app is found.',
       recovery: 'Ensure the app is running and not minimized, then retry.',
+      thrownBy: 'service',
     },
     {
       reason: 'display_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'display_index references a display not in the current configuration.',
       recovery: 'Call macos_manage_displays with action=list to see available displays.',
+      thrownBy: 'service',
     },
     {
       reason: 'path_not_writable',
       code: JsonRpcErrorCode.ValidationError,
       when: 'The target path or MACOS_SCREENSHOT_DIR does not exist or is not writable.',
       recovery: 'Provide a writable absolute path, or ensure MACOS_SCREENSHOT_DIR exists.',
+      thrownBy: 'service',
     },
   ],
 

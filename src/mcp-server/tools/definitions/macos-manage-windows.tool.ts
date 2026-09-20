@@ -81,6 +81,7 @@ export const macosManageWindows = tool('macos_manage_windows', {
       when: 'Any mutating action called without Accessibility permission.',
       recovery:
         'Grant Accessibility in System Settings > Privacy & Security > Accessibility for your terminal or MCP host app.',
+      thrownBy: 'service',
     },
     {
       reason: 'window_not_found',
@@ -143,7 +144,11 @@ export const macosManageWindows = tool('macos_manage_windows', {
     if (input.action === 'focus') {
       const appName = input.app_name ?? input.window_title;
       if (!appName)
-        throw ctx.fail('window_not_found', 'app_name or window_title required for focus');
+        throw ctx.fail(
+          'window_not_found',
+          'app_name or window_title required for focus',
+          ctx.recoveryFor('window_not_found'),
+        );
       try {
         if (input.app_name) {
           const escapedApp = JSON.stringify(input.app_name);
@@ -164,10 +169,19 @@ export const macosManageWindows = tool('macos_manage_windows', {
           );
         }
       } catch {
-        throw ctx.fail('window_not_found', `No window found for "${appName}"`);
+        throw ctx.fail(
+          'window_not_found',
+          `No window found for "${appName}"`,
+          ctx.recoveryFor('window_not_found'),
+        );
       }
       const winState = await getWindowState(osascript, input.app_name, input.window_title, ctx);
-      if (!winState) throw ctx.fail('window_not_found', `No window found for "${appName}"`);
+      if (!winState)
+        throw ctx.fail(
+          'window_not_found',
+          `No window found for "${appName}"`,
+          ctx.recoveryFor('window_not_found'),
+        );
       return { action: 'focus', success: true, window: winState };
     }
 
