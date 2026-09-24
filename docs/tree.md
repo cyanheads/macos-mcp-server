@@ -1,6 +1,6 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-09-24 16:33:53
+Generated on: 2026-09-24 17:07:53
 
 ```text
 macos-mcp-server/
@@ -25,6 +25,7 @@ macos-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md

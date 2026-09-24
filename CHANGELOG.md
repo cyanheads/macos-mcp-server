@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-09-24 · ⚠️ Breaking
+
+Per-action required arguments and numeric bounds are enforced in the tool input schemas and fail as -32602 invalid_arguments; permission denials and missing apps or paths surface as typed reasons, and subprocess errors no longer carry the command line or script source.
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-09-20 · ⚠️ Breaking
 
 mcp-ts-core ^0.12.3 → ^0.13.6 — InvalidParams argument rejections with recovery hints, RequestCancelled disconnects, explicit stateless session mode, plus a manifest env-var wiring fix and forwarded recovery hints across six tools.
