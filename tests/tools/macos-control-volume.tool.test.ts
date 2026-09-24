@@ -3,7 +3,7 @@
  * @module tests/tools/macos-control-volume.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/osascript/osascript-service.js', () => ({
@@ -90,18 +90,35 @@ describe('macosControlVolume', () => {
     expect(setCalls.length).toBeGreaterThan(0);
   });
 
-  it('set with neither level nor muted just reads back state', async () => {
+  it('set with neither level nor muted is rejected by the input schema', () => {
+    expect(() => macosControlVolume.input.parse({ action: 'set' })).toThrow();
+  });
+
+  it('get accepts off-action level and muted arguments and writes nothing', async () => {
     const svc = makeOsascript('50,false');
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
     const ctx = createMockContext();
     const result = await macosControlVolume.handler(
-      macosControlVolume.input.parse({ action: 'set' }),
+      macosControlVolume.input.parse({ action: 'get', level: 10, muted: true }),
       ctx,
     );
-    // No set call, just the readback
-    expect(result.level).toBe(50);
-    expect(result.muted).toBe(false);
+    expect(result).toMatchObject({ level: 50, muted: false });
+    expect(svc.runAppleScript).toHaveBeenCalledTimes(1);
+    expect(String(svc.runAppleScript.mock.calls[0]?.[0])).toContain('get volume settings');
   });
+
+  for (const action of ['get', 'set'] as const) {
+    it(`echoes action=${action} on both structuredContent and content[]`, async () => {
+      vi.mocked(getOsascriptService).mockReturnValue(makeOsascript('42,true') as never);
+      const args = action === 'set' ? { action, level: 42 } : { action };
+      const result = await runToolContract(macosControlVolume, args);
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({ action, level: 42, muted: true });
+      const text = (result.content ?? []).map((b) => ('text' in b ? b.text : '')).join('\n');
+      expect(text).toContain(`**action:** ${action}`);
+      expect(text).toContain('42');
+    });
+  }
 
   it('throws ZodError for level < 0 (schema enforces min(0))', () => {
     expect(() => macosControlVolume.input.parse({ action: 'set', level: -1 })).toThrow();
@@ -123,14 +140,14 @@ describe('macosControlVolume', () => {
   });
 
   it('formats output with level and mute state', () => {
-    const blocks = macosControlVolume.format!({ level: 75, muted: false });
+    const blocks = macosControlVolume.format!({ action: 'get', level: 75, muted: false });
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
     expect(text).toContain('75');
     expect(text).toContain('Unmuted');
   });
 
   it('formats muted state', () => {
-    const blocks = macosControlVolume.format!({ level: 0, muted: true });
+    const blocks = macosControlVolume.format!({ action: 'set', level: 0, muted: true });
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
     expect(text).toContain('Muted');
   });

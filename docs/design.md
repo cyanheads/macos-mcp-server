@@ -117,10 +117,13 @@ No API keys or secrets. The server config is minimal by design.
 | List running | `System Events` JXA — `processes where backgroundOnly is false` | None |
 | Get frontmost | `System Events` — `first process where frontmost is true` | None |
 | Launch | `open -a <name>` or `open -b <bundleId>`; `-j` for hidden launch | None |
-| Quit (graceful) | `tell application "X" to quit` via osascript | None |
-| Force quit | `kill -9 <pid>` where PID from process list | None |
-| Hide | `System Events` — `set visible of process "X" to false` | Accessibility |
-| Unhide | `System Events` — `set visible of process "X" to true` | Accessibility |
+| Running check (quit, force quit, hide, unhide) | `application "X" is running` — resolves the name as `tell application` does, never launches the app | None |
+| Quit (graceful) | `tell application "X" to quit` via osascript, after the running check | Automation > X |
+| Force quit | `kill -9 <pid>`; PID from System Events by the app's bundle id (falling back to process name) | None |
+| Hide | `System Events` — `visible` of the process with that PID set to false | Accessibility |
+| Unhide | `System Events` — `visible` of the process with that PID set to true, then activate | Accessibility |
+
+The running check keys on the application name, not the System Events process name: several apps run under a different process name (`Visual Studio Code` → `Code`, `Firefox` → `firefox`), so a process-name match reports them as not running while they run.
 
 ### Windows
 
@@ -184,11 +187,11 @@ Window capture requires a CGWindowID, obtained via `CGWindowListCopyWindowInfo`.
 
 | Operation | Implementation | Permission |
 |:----------|:--------------|:-----------|
-| Frontmost window path | `tell application "Finder" to get POSIX path of (target of front window as alias)` | None |
-| Get selection | `Application("Finder").selection()` via JXA | Accessibility or Automation > Finder |
+| Frontmost window path | `tell application "Finder" to get POSIX path of (target of front window as alias)` | Automation > Finder |
+| Get selection | `Application("Finder").selection()` via JXA | Automation > Finder |
 | Reveal in Finder | `open -R <path>` | None |
-| Open with app | `open -a <app> <path>` | None |
-| Move to Trash | `tell application "Finder" to delete POSIX file "<path>"` | Automation > Finder |
+| Open with app | Existence check, then `open -a <app> <path>` | None |
+| Move to Trash | Existence check, then `tell application "Finder" to delete POSIX file "<path>"`; a refusal is `trash_refused`, never a fallback to `rm` | Automation > Finder |
 
 ### Focus / DnD
 
@@ -262,7 +265,13 @@ Both targeting strategies are valid but have different failure modes:
 - `app` matches the process name; works when there's one foreground window
 - `title` matches window title; works for multi-window apps (multiple Code windows)
 
-Tools that operate on windows accept an `app_name` parameter for single-window apps and a `window_title` parameter for specific window targeting. When both are provided, `window_title` takes precedence. When neither is provided and the action requires a target, the tool returns an error listing the resolvable windows.
+Tools that operate on windows accept an `app_name` parameter for single-window apps and a `window_title` parameter for specific window targeting. When both are provided, `window_title` takes precedence. When neither is provided and the action requires a target, the call is rejected at argument validation (`invalid_arguments`) before any window lookup runs.
+
+### Per-action argument requirements live in the input schema
+
+A multi-action tool keeps one flat `z.object` root. What each action needs (`quit` → `app_name`, volume `set` → `level` or `muted`, windows `move` → a target plus `x`/`y`) is declared once per tool via `withActionRequirements` (`src/mcp-server/tools/action-requirements.ts`), which adds a root `superRefine` and advertises the same requirements as a root `anyOf` of object branches keyed on the discriminator (a free-text string requirement also carries `minLength: 1`, so a schema-validating client rejects a blank value too). A missing or blank argument fails as `-32602` `invalid_arguments` before the handler runs, and domain reasons (`not_running`, `path_not_found`, `window_not_found`, `device_not_found`, `app_not_found`) mean a value that was present but wrong.
+
+Why not a discriminated union: its root advertises `oneOf` with no root `properties`, it cannot express "either of these two arguments" inside a branch without a refine anyway, and its strict branches reject arguments meant for other actions that callers send today. Why not a handler check: the requirement never reaches `inputSchema`, and every tool failed a missing argument differently.
 
 ### Focus mode: get is unreliable
 
@@ -339,7 +348,7 @@ For AppleScript (non-JXA), use the same JSON.stringify approach or pass values a
 
 The server NEVER attempts to escalate or grant itself permissions. If an operation needs Accessibility/Screen Recording/Automation and it's not granted:
 1. Detect the missing permission (fast, local check)
-2. Return a structured error with `code: Forbidden` and recovery guidance pointing to System Settings
+2. Return a structured error with `code: Forbidden`, `reason: accessibility_required`, and recovery guidance naming the pane actually denied — Accessibility, or Automation for the named target app. Tools that map osascript failures to their own reasons pass a denial through unchanged rather than reporting it as a missing window or refused operation.
 3. Do NOT prompt the OS permission dialog — that's disruptive and unexpected from a background process
 
 ---
@@ -354,9 +363,9 @@ Every tool gets a test file. All subprocess calls are mocked — no actual syste
 |:-----|:-----------|:------------|:-----------|
 | `macos_get_info` | Returns battery, wifi, hostname, version, uptime | `pmset` not available (edge: desktop Mac has no battery → `null`) | Disconnected wifi → `ssid: null` |
 | `macos_check_permissions` | Returns all permission states | — | Fresh install with no permissions granted |
-| `macos_manage_apps` | list returns apps, launch works, quit works | `app_not_found`, `not_running`, `accessibility_required` | App with special chars in name, app with no windows, hidden app |
+| `macos_manage_apps` | list returns apps, launch works, quit works | `app_not_found`, `no_frontmost_app`, `not_running`, `accessibility_required` | App with special chars in name, app with no windows, hidden app |
 | `macos_manage_windows` | list returns windows, focus works, move/resize with bounds verification | `window_not_found`, `accessibility_required` | No visible windows, minimized window, app with 10+ windows, window title with unicode |
-| `macos_control_volume` | get returns level+muted, set changes level | Level out of 0–100 → validation error | Set while HDMI audio is active (level reports `missing value`) |
+| `macos_control_volume` | get returns level+muted, set changes level | Level out of 0–100, or `set` with neither `level` nor `muted` → `invalid_arguments` | Set while HDMI audio is active (level reports `missing value`) |
 | `macos_control_audio` | list devices, switch output/input | `device_not_found`, `switchaudio_unavailable` | Only one device available, partial name match ambiguity |
 | `macos_control_appearance` | get returns mode, set/toggle works | — | Already in requested mode (idempotent — should succeed, not error) |
 | `macos_control_system` | lock, sleep_display succeed | — | — |
@@ -364,7 +373,7 @@ Every tool gets a test file. All subprocess calls are mocked — no actual syste
 | `macos_manage_displays` | list returns displays | `displayplacer_not_found`, `layout_not_found` | Single display, 3+ displays |
 | `macos_send_notification` | Notification fires | — | Title with special chars, very long body, empty body |
 | `macos_manage_focus` | get returns status, set activates mode | `shortcuts_unavailable`, `focus_not_found` | `get` returns `unknown` (expected path, not error) |
-| `macos_manage_finder` | frontmost_path, reveal, open_with, trash | `finder_not_open`, `path_not_found`, `accessibility_required` | Path with spaces, symlinks, path at filesystem root |
+| `macos_manage_finder` | frontmost_path, reveal, open_with, trash | `finder_not_open`, `path_not_found`, `app_not_found`, `trash_refused`, `accessibility_required` | Path with spaces, symlinks, path at filesystem root |
 
 ### Security tests (dedicated test file)
 
@@ -481,9 +490,12 @@ Gated by `process.platform === 'darwin'` in test setup. Only exercise read-only 
 ```ts
 errors: [
   { reason: 'app_not_found', code: NotFound,
-    when: 'No running app matches the given name or bundle_id',
-    recovery: 'Call with action=list to see running apps, or check spelling.' },
-  { reason: 'not_running', code: InvalidParams,
+    when: 'launch names an app_name or bundle_id that matches no installed application',
+    recovery: 'Check the spelling of app_name or bundle_id; launch needs the name or bundle identifier of an installed app.' },
+  { reason: 'no_frontmost_app', code: NotFound,
+    when: 'frontmost finds no application in front',
+    recovery: 'Bring an app to the front, or open one with action=launch, then retry.' },
+  { reason: 'not_running', code: NotFound,
     when: 'quit/force_quit/hide/show called on an app that is not running',
     recovery: 'The app is not running. Use action=launch to start it first.' },
   { reason: 'accessibility_required', code: Forbidden,

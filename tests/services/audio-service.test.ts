@@ -99,4 +99,24 @@ describe('AudioService.listDevices', () => {
       data: { reason: 'switchaudio_unavailable' },
     });
   });
+
+  it('keeps the command line and argv out of any other CLI failure', async () => {
+    execFileMock.mockImplementation((cmd, args, _opts, cb) => {
+      cb(
+        Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\ndevice busy`), {
+          code: 1 as unknown as string,
+          stderr: 'device busy',
+        }),
+      );
+      return { pid: 1 };
+    });
+    const ctx = createMockContext();
+    const err = (await svc.getCurrentDevice('output', ctx).catch((e: unknown) => e)) as Error & {
+      data?: unknown;
+    };
+    expect(err.message).toContain('device busy');
+    expect(err.message).not.toContain('Command failed');
+    expect(err.message).not.toContain('/opt/homebrew/bin/SwitchAudioSource');
+    expect(JSON.stringify(err.data ?? {})).not.toContain('-t');
+  });
 });

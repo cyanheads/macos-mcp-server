@@ -12,18 +12,22 @@ import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
+import { execFailure, execFailureDetail } from '@/utils/exec-failure.js';
 
 const execFile = promisify(execFileCallback);
 
-export interface ScreenshotOptions {
-  appName?: string;
-  displayIndex?: number;
+/** What to capture, carrying the argument each target needs. */
+export type ScreenshotTarget =
+  | { target: 'screen' }
+  | { target: 'display'; displayIndex?: number }
+  | { target: 'region'; region: { x: number; y: number; width: number; height: number } }
+  | { target: 'window'; appName: string };
+
+export type ScreenshotOptions = ScreenshotTarget & {
   includeData?: boolean;
   path?: string;
-  region?: { x: number; y: number; width: number; height: number };
   screenshotDir: string;
-  target: 'screen' | 'window' | 'display' | 'region';
-}
+};
 
 export interface ScreenshotResult {
   height: number;
@@ -94,6 +98,13 @@ async function getImageDimensions(filePath: string): Promise<{ width: number; he
   }
 }
 
+/** Runs screencapture, reporting a failure by its own error text rather than the command line. */
+async function capture(args: string[]): Promise<void> {
+  await execFile('screencapture', args, { timeout: 30_000 }).catch((err: unknown) => {
+    throw execFailure('screencapture', err);
+  });
+}
+
 /** Downscale image to max 1024px wide using sips, return base64 JPEG */
 async function createPreview(
   sourcePath: string,
@@ -119,7 +130,9 @@ async function createPreview(
         tmpPath,
       ],
       { timeout: 30_000 },
-    );
+    ).catch((err: unknown) => {
+      throw execFailure('sips', err);
+    });
 
     const [data, dims] = await Promise.all([readFile(tmpPath), getImageDimensions(tmpPath)]);
 
@@ -149,20 +162,13 @@ export class ScreencaptureService {
     switch (opts.target) {
       case 'screen': {
         // Full screen — no permissions needed
-        await execFile('screencapture', ['-x', outputPath], { timeout: 30_000 });
+        await capture(['-x', outputPath]);
         break;
       }
 
       case 'region': {
-        if (!opts.region)
-          throw new McpError(
-            JsonRpcErrorCode.ValidationError,
-            'region is required for target=region',
-          );
         const { x, y, width, height } = opts.region;
-        await execFile('screencapture', ['-x', '-R', `${x},${y},${width},${height}`, outputPath], {
-          timeout: 30_000,
-        });
+        await capture(['-x', '-R', `${x},${y},${width},${height}`, outputPath]);
         break;
       }
 
@@ -172,8 +178,7 @@ export class ScreencaptureService {
         try {
           await execFile('screencapture', ['-x', `-D${idx}`, outputPath], { timeout: 30_000 });
         } catch (err: unknown) {
-          const e = err as { message?: string; stderr?: string };
-          const msg = (e.stderr ?? e.message ?? '').toLowerCase();
+          const msg = execFailureDetail(err).toLowerCase();
           if (msg.includes('invalid display') || msg.includes('must be a number')) {
             throw new McpError(
               JsonRpcErrorCode.NotFound,
@@ -186,7 +191,7 @@ export class ScreencaptureService {
               },
             );
           }
-          throw err;
+          throw execFailure('screencapture', err);
         }
         break;
       }
@@ -204,13 +209,6 @@ export class ScreencaptureService {
                 hint: 'Grant Screen Recording in System Settings > Privacy & Security > Screen Recording for your terminal or MCP host app.',
               },
             },
-          );
-        }
-
-        if (!opts.appName) {
-          throw new McpError(
-            JsonRpcErrorCode.ValidationError,
-            'app_name is required for target=window',
           );
         }
 
@@ -254,7 +252,7 @@ export class ScreencaptureService {
           );
         }
 
-        await execFile('screencapture', ['-x', '-l', windowId, outputPath], { timeout: 30_000 });
+        await capture(['-x', '-l', windowId, outputPath]);
         break;
       }
     }

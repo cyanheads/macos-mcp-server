@@ -106,3 +106,29 @@ describe('DisplayService.listDisplays', () => {
     expect(displays[1]?.origin).toBe('(3840,928)');
   });
 });
+
+describe('DisplayService.applyLayout failures', () => {
+  it('keeps the command line and argv out of a displayplacer failure', async () => {
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((cmd, args, _opts, cb) => {
+      cb(
+        Object.assign(
+          new Error(`Command failed: ${cmd} ${args.join(' ')}\nUnable to find screen`),
+          {
+            code: 1 as unknown as string,
+            stderr: 'Unable to find screen',
+          },
+        ),
+      );
+      return { pid: 1 };
+    });
+    const ctx = createMockContext();
+    const err = (await new DisplayService()
+      .applyLayout('"id:ABC res:1920x1080 origin:(0,0)"', ctx)
+      .catch((e: unknown) => e)) as Error & { data?: unknown };
+    expect(err.message).toContain('Unable to find screen');
+    expect(err.message).not.toContain('Command failed');
+    expect(err.message).not.toContain('res:1920x1080');
+    expect(JSON.stringify(err.data ?? {})).not.toContain('res:1920x1080');
+  });
+});

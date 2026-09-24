@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
 import { getAudioService } from '@/services/audio/audio-service.js';
 
 const AudioDeviceSchema = z
@@ -26,23 +27,27 @@ export const macosControlAudio = tool('macos_control_audio', {
   description:
     'Manage audio device routing: list all input and output devices, get the current default input and output devices, or switch the default input or output device. Device names support case-insensitive partial matching — "MacBook" matches "MacBook Pro Microphone". Volume level control is separate (use macos_control_volume). Requires SwitchAudioSource CLI (brew install switchaudio-osx).',
   annotations: { readOnlyHint: false, openWorldHint: false },
-  input: z.object({
-    action: z
-      .enum(['list', 'current', 'switch_output', 'switch_input'])
-      .describe(
-        'list — all devices; current — default input and output; switch_output/switch_input — change the default device.',
-      ),
-    device: z
-      .string()
-      .optional()
-      .describe(
-        'Partial or full device name for switch_output/switch_input. Case-insensitive substring match.',
-      ),
-    type: z
-      .enum(['input', 'output', 'all'])
-      .optional()
-      .describe('Filter by device type for action=list. Defaults to "all".'),
-  }),
+  input: withActionRequirements(
+    z.object({
+      action: z
+        .enum(['list', 'current', 'switch_output', 'switch_input'])
+        .describe(
+          'list — all devices; current — default input and output; switch_output/switch_input — change the default device.',
+        ),
+      device: z
+        .string()
+        .optional()
+        .describe(
+          'Partial or full device name for switch_output/switch_input. Case-insensitive substring match.',
+        ),
+      type: z
+        .enum(['input', 'output', 'all'])
+        .optional()
+        .describe('Filter by device type for action=list. Defaults to "all".'),
+    }),
+    'action',
+    { switch_output: [['device']], switch_input: [['device']] },
+  ),
   output: z.object({
     action: z.string().describe('The action that was performed.'),
     // list
@@ -72,6 +77,7 @@ export const macosControlAudio = tool('macos_control_audio', {
       code: JsonRpcErrorCode.NotFound,
       when: 'No audio device name matches the provided string.',
       recovery: 'Call with action=list to see all available devices and their exact names.',
+      thrownBy: 'service',
     },
     {
       reason: 'switchaudio_unavailable',
@@ -105,13 +111,7 @@ export const macosControlAudio = tool('macos_control_audio', {
       }
 
       case 'switch_output': {
-        if (!input.device)
-          throw ctx.fail(
-            'device_not_found',
-            'device is required for switch_output',
-            ctx.recoveryFor('device_not_found'),
-          );
-        await svc.switchDevice(input.device, 'output', ctx);
+        await svc.switchDevice(suppliedArg(input.device, 'device'), 'output', ctx);
         const newDefault = await svc.getCurrentDevice('output', ctx);
         ctx.log.info('macos_control_audio switch_output', { device: newDefault });
         return {
@@ -122,13 +122,7 @@ export const macosControlAudio = tool('macos_control_audio', {
       }
 
       case 'switch_input': {
-        if (!input.device)
-          throw ctx.fail(
-            'device_not_found',
-            'device is required for switch_input',
-            ctx.recoveryFor('device_not_found'),
-          );
-        await svc.switchDevice(input.device, 'input', ctx);
+        await svc.switchDevice(suppliedArg(input.device, 'device'), 'input', ctx);
         const newDefault = await svc.getCurrentDevice('input', ctx);
         ctx.log.info('macos_control_audio switch_input', { device: newDefault });
         return {

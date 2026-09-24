@@ -6,51 +6,68 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
-import { getScreencaptureService } from '@/services/screencapture/screencapture-service.js';
+import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
+import {
+  getScreencaptureService,
+  type ScreenshotTarget,
+} from '@/services/screencapture/screencapture-service.js';
 
 export const macosTakeScreenshot = tool('macos_take_screenshot', {
   title: 'Take macOS Screenshot',
   description:
     'Capture a screenshot of the full screen, a specific display (by 0-based index), a named app window, or a pixel region. Always saves a full-resolution PNG to disk (defaulting to ~/Desktop). Optionally returns a downscaled JPEG preview (max 1024px wide) as base64 for agent visual analysis — keeping response size manageable. Window capture requires Screen Recording permission; all other targets do not.',
   annotations: { readOnlyHint: false, openWorldHint: false },
-  input: z.object({
-    target: z
-      .enum(['screen', 'window', 'display', 'region'])
-      .describe(
-        'screen — full screen; window — a named app window (requires Screen Recording); display — a specific connected display; region — a pixel rectangle.',
-      ),
-    app_name: z
-      .string()
-      .optional()
-      .describe(
-        'App name for target=window, e.g. "Safari". App must be running and not minimized.',
-      ),
-    display_index: z
-      .number()
-      .optional()
-      .describe('0-based display index for target=display. 0 is the primary display.'),
-    region: z
-      .object({
-        x: z.number().describe('Left edge x-coordinate.'),
-        y: z.number().describe('Top edge y-coordinate.'),
-        width: z.number().describe('Region width in pixels.'),
-        height: z.number().describe('Region height in pixels.'),
-      })
-      .optional()
-      .describe('Pixel region to capture. Required for target=region.'),
-    path: z
-      .string()
-      .optional()
-      .describe(
-        'Absolute path for the output PNG. Defaults to MACOS_SCREENSHOT_DIR/<timestamp>.png (~/Desktop if not configured). Must be within ~/Desktop, /tmp, or the home directory.',
-      ),
-    include_data: z
-      .boolean()
-      .optional()
-      .describe(
-        'When true, returns a downscaled JPEG preview as base64 in the response for agent visual analysis. Defaults to false.',
-      ),
-  }),
+  input: withActionRequirements(
+    z.object({
+      target: z
+        .enum(['screen', 'window', 'display', 'region'])
+        .describe(
+          'screen — full screen; window — a named app window (requires Screen Recording); display — a specific connected display; region — a pixel rectangle.',
+        ),
+      app_name: z
+        .string()
+        .optional()
+        .describe(
+          'App name for target=window, e.g. "Safari". App must be running and not minimized.',
+        ),
+      display_index: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          '0-based display index for target=display. 0 is the primary display. Defaults to 0 when omitted.',
+        ),
+      region: z
+        .object({
+          x: z
+            .number()
+            .describe('Left edge x-coordinate. Negative for displays left of the primary.'),
+          y: z.number().describe('Top edge y-coordinate. Negative for displays above the primary.'),
+          width: z.number().positive().describe('Region width in pixels. Must be greater than 0.'),
+          height: z
+            .number()
+            .positive()
+            .describe('Region height in pixels. Must be greater than 0.'),
+        })
+        .optional()
+        .describe('Pixel region to capture for target=region.'),
+      path: z
+        .string()
+        .optional()
+        .describe(
+          'Absolute path for the output PNG. Defaults to MACOS_SCREENSHOT_DIR/<timestamp>.png (~/Desktop if not configured). Must be within ~/Desktop, /tmp, or the home directory.',
+        ),
+      include_data: z
+        .boolean()
+        .optional()
+        .describe(
+          'When true, returns a downscaled JPEG preview as base64 in the response for agent visual analysis. Defaults to false.',
+        ),
+    }),
+    'target',
+    { region: [['region']], window: [['app_name']] },
+  ),
   output: z.object({
     path: z.string().describe('Absolute path to the full-resolution PNG written to disk.'),
     width: z.number().describe('Full-resolution image width in pixels.'),
@@ -106,18 +123,24 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
     const svc = getScreencaptureService();
     const config = getServerConfig();
 
-    const screenshotOpts: import('@/services/screencapture/screencapture-service.js').ScreenshotOptions =
+    const shot: ScreenshotTarget =
+      input.target === 'region'
+        ? { target: 'region', region: suppliedArg(input.region, 'region') }
+        : input.target === 'window'
+          ? { target: 'window', appName: suppliedArg(input.app_name, 'app_name') }
+          : input.target === 'display' && input.display_index !== undefined
+            ? { target: 'display', displayIndex: input.display_index }
+            : { target: input.target };
+
+    const result = await svc.takeScreenshot(
       {
-        target: input.target,
+        ...shot,
         includeData: input.include_data ?? false,
         screenshotDir: config.screenshotDir,
-      };
-    if (input.app_name !== undefined) screenshotOpts.appName = input.app_name;
-    if (input.display_index !== undefined) screenshotOpts.displayIndex = input.display_index;
-    if (input.region !== undefined) screenshotOpts.region = input.region;
-    if (input.path !== undefined) screenshotOpts.path = input.path;
-
-    const result = await svc.takeScreenshot(screenshotOpts, ctx);
+        ...(input.path !== undefined && { path: input.path }),
+      },
+      ctx,
+    );
 
     ctx.log.info('macos_take_screenshot', {
       target: input.target,

@@ -11,8 +11,57 @@ vi.mock('@/services/osascript/osascript-service.js', () => ({
   initOsascriptService: vi.fn(),
 }));
 
+/**
+ * Shape of the mocked `execFile`. The real OsascriptService wraps it in
+ * `promisify`, and the module mock carries no `util.promisify.custom` hook, so
+ * promisify takes the generic path and resolves with the callback's second
+ * argument.
+ */
+type ExecFileMock = (
+  cmd: string,
+  args: string[],
+  opts: unknown,
+  cb: (err: NodeJS.ErrnoException | null, result?: { stdout: string; stderr: string }) => void,
+) => unknown;
+
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn<ExecFileMock>() }));
+
+vi.mock('node:child_process', () => ({
+  execFile: execFileMock,
+}));
+
 import { macosManageWindows } from '@/mcp-server/tools/definitions/macos-manage-windows.tool.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
+
+const { OsascriptService } = await vi.importActual<
+  typeof import('@/services/osascript/osascript-service.js')
+>('@/services/osascript/osascript-service.js');
+
+/** Real osascript stderr for an Accessibility denial and for the find script's own miss. */
+const ACCESSIBILITY_DENIED =
+  'execution error: System Events got an error: osascript is not allowed assistive access. (-25211)';
+const WINDOW_NOT_FOUND_THROWN = 'execution error: Error: Error: window_not_found (-2700)';
+
+/**
+ * Drives the real OsascriptService: JXA scripts that touch System Events fail
+ * with `stderr`; the AppKit screen-frame query (no permission needed) succeeds.
+ */
+function realServiceFailingWith(stderr: string) {
+  execFileMock.mockImplementation((cmd, args, _opts, cb) => {
+    const script = args.at(-1) ?? '';
+    if (script.includes('NSScreen')) cb(null, { stdout: '[]', stderr: '' });
+    else
+      cb(
+        Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\n${stderr}`), {
+          code: 1 as unknown as string,
+          stdout: '',
+          stderr,
+        }),
+      );
+    return { pid: 1 };
+  });
+  vi.mocked(getOsascriptService).mockReturnValue(new OsascriptService() as never);
+}
 
 const mockWindows = [
   {
@@ -84,11 +133,66 @@ describe('macosManageWindows', () => {
     expect(result.windows).toHaveLength(0);
   });
 
-  it('focus requires app_name or window_title', async () => {
+  it('focus without a target is rejected by the input schema', () => {
+    expect(() => macosManageWindows.input.parse({ action: 'focus' })).toThrow();
+    expect(() =>
+      macosManageWindows.input.parse({ action: 'focus', app_name: '', window_title: '' }),
+    ).toThrow();
+  });
+
+  it('focus by window_title ignores a blank app_name', async () => {
+    const svc = makeOsascript(JSON.stringify(mockWindowState));
+    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
     const ctx = createMockContext({ errors: macosManageWindows.errors });
-    await expect(
-      macosManageWindows.handler(macosManageWindows.input.parse({ action: 'focus' }), ctx),
-    ).rejects.toMatchObject({ data: { reason: 'window_not_found' } });
+    const result = await macosManageWindows.handler(
+      macosManageWindows.input.parse({
+        action: 'focus',
+        app_name: '',
+        window_title: 'Home - Safari',
+      }),
+      ctx,
+    );
+    expect(result).toMatchObject({ action: 'focus', success: true });
+    const first = svc.runJxa.mock.calls[0]?.[0] as string;
+    expect(first).toContain('"Home - Safari"');
+    expect(first).toContain('setFrontmost(true)');
+  });
+
+  describe('permission denials pass through window lookup', () => {
+    for (const args of [
+      { action: 'move', app_name: 'Finder', x: 0, y: 0 },
+      { action: 'resize', app_name: 'Finder', width: 800, height: 600 },
+      { action: 'move_resize', app_name: 'Finder', x: 0, y: 0, width: 800, height: 600 },
+      { action: 'minimize', app_name: 'Finder' },
+      { action: 'fullscreen', app_name: 'Finder' },
+      { action: 'close', app_name: 'Finder' },
+      { action: 'focus', window_title: 'Zz' },
+    ]) {
+      it(`${args.action} returns accessibility_required on an Accessibility denial`, async () => {
+        realServiceFailingWith(ACCESSIBILITY_DENIED);
+        const ctx = createMockContext({ errors: macosManageWindows.errors });
+        await expect(
+          macosManageWindows.handler(macosManageWindows.input.parse(args), ctx),
+        ).rejects.toMatchObject({
+          code: -32005,
+          data: {
+            reason: 'accessibility_required',
+            recovery: { hint: expect.stringContaining('Privacy & Security > Accessibility') },
+          },
+        });
+      });
+    }
+
+    it('a window that is genuinely missing still returns window_not_found', async () => {
+      realServiceFailingWith(WINDOW_NOT_FOUND_THROWN);
+      const ctx = createMockContext({ errors: macosManageWindows.errors });
+      await expect(
+        macosManageWindows.handler(
+          macosManageWindows.input.parse({ action: 'move', app_name: 'Ghost', x: 0, y: 0 }),
+          ctx,
+        ),
+      ).rejects.toMatchObject({ code: -32001, data: { reason: 'window_not_found' } });
+    });
   });
 
   it('focus throws window_not_found when window state cannot be fetched', async () => {
@@ -105,17 +209,8 @@ describe('macosManageWindows', () => {
     ).rejects.toMatchObject({ data: { reason: 'window_not_found' } });
   });
 
-  it('move requires x and y', async () => {
-    // getWindowState returns a valid window but move args missing
-    const svc = makeOsascript(JSON.stringify(mockWindowState));
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext({ errors: macosManageWindows.errors });
-    await expect(
-      macosManageWindows.handler(
-        macosManageWindows.input.parse({ action: 'move', app_name: 'Safari' }),
-        ctx,
-      ),
-    ).rejects.toThrow('x and y are required');
+  it('move without x and y is rejected by the input schema', () => {
+    expect(() => macosManageWindows.input.parse({ action: 'move', app_name: 'Safari' })).toThrow();
   });
 
   it('move succeeds when x and y provided', async () => {
@@ -130,16 +225,10 @@ describe('macosManageWindows', () => {
     expect(result.success).toBe(true);
   });
 
-  it('resize requires width and height', async () => {
-    const svc = makeOsascript(JSON.stringify(mockWindowState));
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext({ errors: macosManageWindows.errors });
-    await expect(
-      macosManageWindows.handler(
-        macosManageWindows.input.parse({ action: 'resize', app_name: 'Safari' }),
-        ctx,
-      ),
-    ).rejects.toThrow('width and height are required');
+  it('resize without width and height is rejected by the input schema', () => {
+    expect(() =>
+      macosManageWindows.input.parse({ action: 'resize', app_name: 'Safari' }),
+    ).toThrow();
   });
 
   it('resize succeeds when width and height provided', async () => {
@@ -159,16 +248,31 @@ describe('macosManageWindows', () => {
     expect(result.success).toBe(true);
   });
 
-  it('move_resize requires x, y, width, and height', async () => {
+  it('move_resize without width and height is rejected by the input schema', () => {
+    expect(() =>
+      macosManageWindows.input.parse({ action: 'move_resize', app_name: 'Safari', x: 0, y: 0 }),
+    ).toThrow();
+  });
+
+  it('move_resize writes position then size into the window script', async () => {
     const svc = makeOsascript(JSON.stringify(mockWindowState));
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
     const ctx = createMockContext({ errors: macosManageWindows.errors });
-    await expect(
-      macosManageWindows.handler(
-        macosManageWindows.input.parse({ action: 'move_resize', app_name: 'Safari', x: 0, y: 0 }),
-        ctx,
-      ),
-    ).rejects.toThrow('x, y, width, and height are required');
+    await macosManageWindows.handler(
+      macosManageWindows.input.parse({
+        action: 'move_resize',
+        app_name: 'Safari',
+        x: -1920,
+        y: 10,
+        width: 800,
+        height: 600,
+      }),
+      ctx,
+    );
+    const scripts = svc.runJxa.mock.calls.map((c) => c[0] as string);
+    expect(
+      scripts.some((s) => s.includes('win.position = [-1920, 10]; win.size = [800, 600];')),
+    ).toBe(true);
   });
 
   it('minimize returns success', async () => {

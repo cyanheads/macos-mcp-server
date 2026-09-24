@@ -82,11 +82,8 @@ describe('macosManageDisplays', () => {
     ).rejects.toMatchObject({ data: { reason: 'layout_not_found' } });
   });
 
-  it('apply_layout requires layout_name', async () => {
-    const ctx = createMockContext({ errors: macosManageDisplays.errors });
-    await expect(
-      macosManageDisplays.handler(macosManageDisplays.input.parse({ action: 'apply_layout' }), ctx),
-    ).rejects.toThrow('layout_name is required');
+  it('apply_layout without layout_name is rejected by the input schema', () => {
+    expect(() => macosManageDisplays.input.parse({ action: 'apply_layout' })).toThrow();
   });
 
   it('formats list output with display details', () => {

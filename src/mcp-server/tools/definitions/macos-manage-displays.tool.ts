@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
+import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
 import { getDisplayService } from '@/services/display/display-service.js';
 
 const DisplayInfoSchema = z
@@ -26,17 +27,21 @@ export const macosManageDisplays = tool('macos_manage_displays', {
   description:
     'List connected displays with their current layout (resolution, position, rotation, scaling) and optionally apply a pre-configured display layout by name. Requires displayplacer CLI (brew install jakehilborn/jakehilborn/displayplacer). Layouts are pre-configured in the MACOS_DISPLAY_LAYOUTS environment variable as a JSON object mapping names to displayplacer argument strings. Layout application only accepts named presets — raw displayplacer args are never accepted from the user.',
   annotations: { readOnlyHint: false, openWorldHint: false },
-  input: z.object({
-    action: z
-      .enum(['list', 'apply_layout'])
-      .describe('list — enumerate connected displays; apply_layout — activate a saved layout.'),
-    layout_name: z
-      .string()
-      .optional()
-      .describe(
-        'Name of the display layout to apply. Must match a key in MACOS_DISPLAY_LAYOUTS. Required for action=apply_layout.',
-      ),
-  }),
+  input: withActionRequirements(
+    z.object({
+      action: z
+        .enum(['list', 'apply_layout'])
+        .describe('list — enumerate connected displays; apply_layout — activate a saved layout.'),
+      layout_name: z
+        .string()
+        .optional()
+        .describe(
+          'Name of the display layout to apply for action=apply_layout. Must match a key in MACOS_DISPLAY_LAYOUTS.',
+        ),
+    }),
+    'action',
+    { apply_layout: [['layout_name']] },
+  ),
   output: z.object({
     action: z.string().describe('The action that was performed.'),
     // list
@@ -87,8 +92,7 @@ export const macosManageDisplays = tool('macos_manage_displays', {
     }
 
     // apply_layout
-    const layoutName = input.layout_name;
-    if (!layoutName) throw new Error('layout_name is required for apply_layout');
+    const layoutName = suppliedArg(input.layout_name, 'layout_name');
 
     const config = getServerConfig();
     let layouts: Record<string, string> = {};

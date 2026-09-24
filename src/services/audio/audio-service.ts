@@ -9,6 +9,7 @@ import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
+import { execFailure } from '@/utils/exec-failure.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -28,8 +29,7 @@ export class AudioService {
       const result = await execFile(SWITCH_AUDIO_SOURCE, args, { timeout: 10_000 });
       return (result.stdout ?? '').trim();
     } catch (err: unknown) {
-      const e = err as { code?: string | number; message?: string };
-      if (e.code === 'ENOENT') {
+      if ((err as { code?: unknown }).code === 'ENOENT') {
         throw new McpError(
           JsonRpcErrorCode.ServiceUnavailable,
           'SwitchAudioSource is not installed.',
@@ -39,11 +39,7 @@ export class AudioService {
           },
         );
       }
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
-        `SwitchAudioSource failed: ${e.message ?? 'unknown error'}`,
-        { args },
-      );
+      throw execFailure('SwitchAudioSource', err);
     }
   }
 

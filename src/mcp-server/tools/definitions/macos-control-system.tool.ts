@@ -7,6 +7,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
+import { execFailure } from '@/utils/exec-failure.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -31,7 +32,9 @@ export const macosControlSystem = tool('macos_control_system', {
 
     if (input.action === 'sleep_display') {
       // pmset displaysleepnow — confirmed working, no permissions needed
-      await execFile('pmset', ['displaysleepnow'], { timeout: 5_000 });
+      await execFile('pmset', ['displaysleepnow'], { timeout: 5_000 }).catch((err: unknown) => {
+        throw execFailure('pmset', err);
+      });
       return { success: true, action: input.action };
     }
 

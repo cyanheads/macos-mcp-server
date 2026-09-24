@@ -69,6 +69,16 @@ vi.mock('@/config/server-config.js', () => ({
   getServerConfig: vi.fn().mockReturnValue({ screenshotDir: '/tmp', displayLayouts: '{}' }),
 }));
 
+/**
+ * Every path exists, so trash and open_with payloads get past the existence
+ * check and reach the Finder script and the `open` argv they would otherwise
+ * never touch.
+ */
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs/promises')>()),
+  lstat: vi.fn().mockResolvedValue({}),
+}));
+
 import { macosControlAudio } from '@/mcp-server/tools/definitions/macos-control-audio.tool.js';
 import { macosManageApps } from '@/mcp-server/tools/definitions/macos-manage-apps.tool.js';
 import { macosManageFinder } from '@/mcp-server/tools/definitions/macos-manage-finder.tool.js';
@@ -166,6 +176,12 @@ describe('Injection safety: macos_manage_apps (app_name)', () => {
 
   beforeEach(() => {
     svc = makeOsascript();
+    // Every app reads as running with PID 4242, so each payload clears the
+    // running check and reaches the action's own script too.
+    svc.runAppleScript.mockImplementation(async (script: string) => ({
+      stdout: script.includes('unix id') ? '4242' : script.includes('is running') ? 'true' : '',
+      stderr: '',
+    }));
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
     execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
       cb(null);
@@ -178,18 +194,36 @@ describe('Injection safety: macos_manage_apps (app_name)', () => {
   });
 
   for (const payload of INJECTION_PAYLOADS) {
-    it(`app_name in quit — not raw in scripts: ${JSON.stringify(payload).slice(0, 60)}`, async () => {
+    it(`app_name in quit — running check and quit script both escaped: ${JSON.stringify(payload).slice(0, 60)}`, async () => {
       const ctx = createMockContext({ errors: macosManageApps.errors });
-      try {
+      await macosManageApps.handler(
+        macosManageApps.input.parse({ action: 'quit', app_name: payload }),
+        ctx,
+      );
+      const scripts = collectScriptArgs(svc);
+      const escaped = JSON.stringify(payload);
+      expect(scripts).toContain(`application ${escaped} is running`);
+      expect(scripts).toContain(`tell application ${escaped} to quit`);
+      assertPayloadEscapedInScripts(scripts, payload);
+    });
+
+    for (const action of ['force_quit', 'hide', 'show'] as const) {
+      it(`app_name in ${action} — PID lookup script escaped: ${JSON.stringify(payload).slice(0, 60)}`, async () => {
+        const ctx = createMockContext({ errors: macosManageApps.errors });
         await macosManageApps.handler(
-          macosManageApps.input.parse({ action: 'quit', app_name: payload }),
+          macosManageApps.input.parse({ action, app_name: payload }),
           ctx,
         );
-      } catch {
-        // Expected — most payloads result in "app not found"
-      }
-      assertPayloadEscapedInScripts(collectScriptArgs(svc), payload);
-    });
+        const scripts = collectScriptArgs(svc);
+        expect(
+          scripts.some((s) => s.includes('unix id') && s.includes(JSON.stringify(payload))),
+        ).toBe(true);
+        assertPayloadEscapedInScripts(scripts, payload);
+        if (action === 'force_quit') {
+          expect(execFileMock.mock.calls.map((c) => c[1])).toContainEqual(['-9', '4242']);
+        }
+      });
+    }
 
     it(`app_name in launch — passed as discrete execFile argv element: ${JSON.stringify(payload).slice(0, 60)}`, async () => {
       const ctx = createMockContext({ errors: macosManageApps.errors });
@@ -311,31 +345,46 @@ describe('Injection safety: macos_manage_finder (path, app_name)', () => {
     it(`path in trash — escaped via JSON.stringify in AppleScript: ${JSON.stringify(payload).slice(0, 60)}`, async () => {
       const absolutePayload = payload.startsWith('/') ? payload : `/${payload}`;
       const ctx = createMockContext({ errors: macosManageFinder.errors });
-      try {
-        await macosManageFinder.handler(
-          macosManageFinder.input.parse({ action: 'trash', path: absolutePayload }),
-          ctx,
-        );
-      } catch {
-        // Acceptable
-      }
-      assertPayloadEscapedInScripts(collectScriptArgs(svc), absolutePayload);
+      await macosManageFinder.handler(
+        macosManageFinder.input.parse({ action: 'trash', path: absolutePayload }),
+        ctx,
+      );
+      const scripts = collectScriptArgs(svc);
+      // The existence check passed, so the payload reached the Finder script.
+      expect(scripts).toContain(
+        `tell application "Finder" to delete POSIX file ${JSON.stringify(absolutePayload)}`,
+      );
+      assertPayloadEscapedInScripts(scripts, absolutePayload);
+    });
+
+    it(`path in open_with — passed as discrete argv element: ${JSON.stringify(payload).slice(0, 60)}`, async () => {
+      const absolutePayload = payload.startsWith('/') ? payload : `/${payload}`;
+      const ctx = createMockContext({ errors: macosManageFinder.errors });
+      await macosManageFinder.handler(
+        macosManageFinder.input.parse({ action: 'open_with', path: absolutePayload }),
+        ctx,
+      );
+      expect(execFileMock.mock.calls.map((c) => c.slice(0, 2))).toContainEqual([
+        'open',
+        [absolutePayload],
+      ]);
     });
 
     it(`app_name in open_with — passed as discrete argv element: ${JSON.stringify(payload).slice(0, 60)}`, async () => {
       const ctx = createMockContext({ errors: macosManageFinder.errors });
-      try {
-        await macosManageFinder.handler(
-          macosManageFinder.input.parse({
-            action: 'open_with',
-            path: '/tmp/file.txt',
-            app_name: payload,
-          }),
-          ctx,
-        );
-      } catch {
-        // Acceptable
-      }
+      await macosManageFinder.handler(
+        macosManageFinder.input.parse({
+          action: 'open_with',
+          path: '/tmp/file.txt',
+          app_name: payload,
+        }),
+        ctx,
+      );
+      // The existence check passed, so `open` ran with the payload as its own argv element.
+      expect(execFileMock.mock.calls.map((c) => c.slice(0, 2))).toContainEqual([
+        'open',
+        ['-a', payload, '/tmp/file.txt'],
+      ]);
       // execFile('open', ['-a', appName, path]) — appName must be a discrete argv element
       const execCalls = execFileMock.mock.calls;
       for (const call of execCalls) {

@@ -1,6 +1,6 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-09-20 14:12:08
+Generated on: 2026-09-24 16:33:53
 
 ```text
 macos-mcp-server/
@@ -142,31 +142,35 @@ macos-mcp-server/
 │   │   │       ├── macos-displays.resource.ts
 │   │   │       └── macos-system-info.resource.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── macos-check-permissions.tool.ts
-│   │           ├── macos-control-appearance.tool.ts
-│   │           ├── macos-control-audio.tool.ts
-│   │           ├── macos-control-system.tool.ts
-│   │           ├── macos-control-volume.tool.ts
-│   │           ├── macos-get-info.tool.ts
-│   │           ├── macos-manage-apps.tool.ts
-│   │           ├── macos-manage-displays.tool.ts
-│   │           ├── macos-manage-finder.tool.ts
-│   │           ├── macos-manage-focus.tool.ts
-│   │           ├── macos-manage-windows.tool.ts
-│   │           ├── macos-send-notification.tool.ts
-│   │           └── macos-take-screenshot.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── macos-check-permissions.tool.ts
+│   │       │   ├── macos-control-appearance.tool.ts
+│   │       │   ├── macos-control-audio.tool.ts
+│   │       │   ├── macos-control-system.tool.ts
+│   │       │   ├── macos-control-volume.tool.ts
+│   │       │   ├── macos-get-info.tool.ts
+│   │       │   ├── macos-manage-apps.tool.ts
+│   │       │   ├── macos-manage-displays.tool.ts
+│   │       │   ├── macos-manage-finder.tool.ts
+│   │       │   ├── macos-manage-focus.tool.ts
+│   │       │   ├── macos-manage-windows.tool.ts
+│   │       │   ├── macos-send-notification.tool.ts
+│   │       │   └── macos-take-screenshot.tool.ts
+│   │       └── action-requirements.ts
 │   ├── services/
 │   │   ├── audio/
 │   │   │   └── audio-service.ts
 │   │   ├── display/
 │   │   │   └── display-service.ts
 │   │   ├── osascript/
-│   │   │   └── osascript-service.ts
+│   │   │   ├── osascript-service.ts
+│   │   │   └── permission-denial.ts
 │   │   ├── screencapture/
 │   │   │   └── screencapture-service.ts
 │   │   └── system-info/
 │   │       └── system-info-service.ts
+│   ├── utils/
+│   │   └── exec-failure.ts
 │   └── index.ts
 ├── tests/
 │   ├── security/
@@ -174,8 +178,11 @@ macos-mcp-server/
 │   ├── services/
 │   │   ├── audio-service.test.ts
 │   │   ├── display-service.test.ts
+│   │   ├── osascript-service.test.ts
+│   │   ├── screencapture-service.test.ts
 │   │   └── system-info-service.test.ts
 │   └── tools/
+│       ├── action-requirements.test.ts
 │       ├── error-contract-recovery.test.ts
 │       ├── macos-check-permissions.tool.test.ts
 │       ├── macos-control-appearance.tool.test.ts
@@ -189,7 +196,8 @@ macos-mcp-server/
 │       ├── macos-manage-focus.tool.test.ts
 │       ├── macos-manage-windows.tool.test.ts
 │       ├── macos-send-notification.tool.test.ts
-│       └── macos-take-screenshot.tool.test.ts
+│       ├── macos-take-screenshot.tool.test.ts
+│       └── missing-arguments.test.ts
 ├── .env.example
 ├── .gitattributes
 ├── .gitignore

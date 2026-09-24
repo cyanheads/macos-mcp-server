@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -69,23 +70,27 @@ export const macosManageFocus = tool('macos_manage_focus', {
   description:
     'Get or set Do Not Disturb / Focus mode. The get action is best-effort — macOS 13+ protects the Focus state database and the returned status may be "unknown" on some configurations. The set action requires the built-in "Set Focus" shortcut to exist in the Shortcuts app (present on macOS 12+). Mode names must exactly match configured Focus profiles (e.g. "Do Not Disturb", "Work", "Personal").',
   annotations: { readOnlyHint: false, openWorldHint: false },
-  input: z.object({
-    action: z
-      .enum(['get', 'set'])
-      .describe(
-        'get — query current Focus status (best-effort); set — enable or disable a Focus mode.',
-      ),
-    mode: z
-      .string()
-      .optional()
-      .describe(
-        'Focus mode name for action=set, e.g. "Do Not Disturb", "Work". Must match a configured Focus profile exactly.',
-      ),
-    enabled: z
-      .boolean()
-      .optional()
-      .describe('For action=set: true=enable the mode, false=disable it. Defaults to true.'),
-  }),
+  input: withActionRequirements(
+    z.object({
+      action: z
+        .enum(['get', 'set'])
+        .describe(
+          'get — query current Focus status (best-effort); set — enable or disable a Focus mode.',
+        ),
+      mode: z
+        .string()
+        .optional()
+        .describe(
+          'Focus mode name for action=set, e.g. "Do Not Disturb", "Work". Must match a configured Focus profile exactly.',
+        ),
+      enabled: z
+        .boolean()
+        .optional()
+        .describe('For action=set: true=enable the mode, false=disable it. Defaults to true.'),
+    }),
+    'action',
+    { set: [['mode']] },
+  ),
   output: z.object({
     action: z.string().describe('The action that was performed.'),
     // get
@@ -136,8 +141,7 @@ export const macosManageFocus = tool('macos_manage_focus', {
     }
 
     // set
-    const mode = input.mode;
-    if (!mode) throw new Error('mode is required for action=set');
+    const mode = suppliedArg(input.mode, 'mode');
     const enabled = input.enabled !== false; // default true
 
     try {

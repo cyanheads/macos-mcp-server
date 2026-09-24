@@ -83,7 +83,8 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 - `launch` — open or activate by `app_name` or `bundle_id`; `hidden=true` starts in the background
 - `quit` (graceful AppleScript quit) vs. `force_quit` (SIGKILL, no save prompt)
 - `hide` / `show` — toggle visibility; requires Accessibility
-- Typed errors: `app_not_found`, `not_running`, `accessibility_required`
+- `quit`, `force_quit`, `hide`, and `show` first check that the app is running — resolved by application name the way `tell application` does (`"Visual Studio Code"` finds the `Code` process), without launching it — and return `not_running` when it isn't
+- Typed errors: `app_not_found` (`launch` of an app that isn't installed), `no_frontmost_app`, `not_running`, `accessibility_required`
 
 ---
 
@@ -91,6 +92,7 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 - `list` — all visible windows across apps, with position, size, minimized state, and 0-based `display_index`
 - `focus`, `move`, `resize`, `move_resize`, `minimize`, `fullscreen`, `close` — target by `app_name` or exact `window_title` (title takes precedence when both are given)
+- `move` needs `x`/`y`, `resize` needs `width`/`height` (both greater than 0), `move_resize` needs all four
 - `list` and `focus` require no permissions; every other action requires Accessibility
 - Typed errors: `window_not_found`, `accessibility_required`
 
@@ -99,8 +101,8 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 ### `macos_control_volume` <sub>tool</sub>
 
 - `get` — current output volume (0–100) and mute state
-- `set` — accepts `level` (0–100), `muted`, or both; `level=0` does not mute
-- Always returns current state after a `set`
+- `set` — requires `level` (0–100), `muted`, or both; `level=0` does not mute
+- Always returns current state, with the `action` echoed
 
 ---
 
@@ -116,8 +118,9 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos_control_appearance` <sub>tool</sub>
 
-- `get` — returns `dark_mode: true/false`
-- `set` with `mode: "dark" | "light" | "toggle"` — `dark`/`light` are idempotent, `toggle` flips on each call
+- `get` — returns `dark_mode: true/false`, with the `action` echoed
+- `set` requires `mode: "dark" | "light" | "toggle"` — `dark`/`light` are idempotent, `toggle` flips on each call
+- Scripts System Events; typed error `accessibility_required` when Automation > System Events is denied
 
 ---
 
@@ -131,7 +134,7 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos_take_screenshot` <sub>tool</sub>
 
-- `target`: `screen`, `display` (0-based `display_index`), `region` (pixel rect) — no Screen Recording required; `window` (by `app_name`) requires Screen Recording
+- `target`: `screen`, `display` (0-based integer `display_index`, default 0), `region` (pixel rect, `width`/`height` greater than 0) — no Screen Recording required; `window` (by `app_name`) requires Screen Recording
 - Always saves a full-resolution PNG; `path` defaults to `MACOS_SCREENSHOT_DIR/<timestamp>.png`, falling back to `~/Desktop`; a custom `path` must be within `~/Desktop`, `/tmp`, or the home directory
 - `include_data=true` adds a base64 JPEG `preview` (max 1024px wide, ~70% quality) plus `preview_width`/`preview_height`
 - Typed errors: `screen_recording_required`, `window_not_found`, `display_not_found`, `path_not_writable`
@@ -164,10 +167,12 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos_manage_finder` <sub>tool</sub>
 
-- `frontmost_path` — POSIX path of the active Finder window, or `null` when none is open; no permissions required
-- `get_selection` — POSIX paths of selected items; requires Automation > Finder permission
-- `reveal` (`open -R`), `open_with` (`open -a <App>`), `trash` (moves to Trash — recoverable, not permanent delete)
-- Typed errors: `finder_not_open`, `path_not_found`, `accessibility_required`
+- `frontmost_path` — POSIX path of the active Finder window, or `null` when none is open
+- `get_selection` — POSIX paths of selected items
+- `reveal` (`open -R`), `open_with` (`open -a <App>`, or the default app when `app_name` is omitted), `trash` (moves to Trash — recoverable, never a permanent delete)
+- `open_with` and `trash` check that the path exists before calling `open` or Finder
+- `frontmost_path`, `get_selection`, and `trash` script Finder and require Automation > Finder permission; `reveal` and `open_with` need none
+- Typed errors: `finder_not_open`, `path_not_found`, `app_not_found` (unknown `open_with` app), `trash_refused` (Finder declined an existing item — locked, in use, or no Trash on the volume), `accessibility_required`
 
 ---
 
@@ -206,7 +211,9 @@ macOS-specific:
 
 Agent-friendly output:
 
-- Permission errors carry specific grant instructions (`System Settings > Privacy & Security > [permission type]`)
+- Permission errors carry the `accessibility_required` reason and grant instructions for the permission actually denied — `Privacy & Security > Accessibility`, or `Privacy & Security > Automation` for the named app
+- A missing per-action argument (`set` without `mode`, `quit` without `app_name`) is rejected before anything runs, as `-32602` with reason `invalid_arguments` and a hint naming what to send; each multi-action tool advertises those requirements in its `inputSchema`
+- Errors carry the failing program's own error text, never its command line or script source
 - Optional CLI dependencies surface `ServiceUnavailable` with the exact `brew install` command needed
 - `macos_manage_windows action=list` reports `display_index` on every window so agents can reason about multi-monitor layouts
 - `macos_take_screenshot` separates the full-resolution disk write from an optional base64 preview, keeping response size manageable
@@ -351,8 +358,10 @@ bun run lint:mcp   # Validate MCP definitions against spec
 | `src/index.ts` | `createApp()` entry — registers tools/resources and inits services |
 | `src/config/server-config.ts` | `MACOS_SCREENSHOT_DIR` and `MACOS_DISPLAY_LAYOUTS` env parsing |
 | `src/mcp-server/tools/definitions/` | 13 tool definitions (`macos-*.tool.ts`) |
+| `src/mcp-server/tools/action-requirements.ts` | Per-action argument requirements — enforced by the input schema and advertised in `inputSchema` |
 | `src/mcp-server/resources/definitions/` | 3 resource definitions (`macos-*.resource.ts`) |
-| `src/services/osascript/` | osascript JXA + AppleScript runner with configurable timeout |
+| `src/services/osascript/` | osascript JXA + AppleScript runner with configurable timeout and permission-denial classification |
+| `src/utils/exec-failure.ts` | Caller-safe error text for a failed CLI call (never the command line) |
 | `src/services/audio/` | SwitchAudioSource device listing and switching |
 | `src/services/display/` | displayplacer list and apply-layout |
 | `src/services/screencapture/` | screencapture + sips PNG capture and JPEG preview |

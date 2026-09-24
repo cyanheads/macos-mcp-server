@@ -5,7 +5,12 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
+import { isPermissionDenial } from '@/services/osascript/permission-denial.js';
+
+/** Every mutating action and focus names its window by app_name, window_title, or both. */
+const TARGET = ['app_name', 'window_title'] as const;
 
 const WindowSchema = z
   .object({
@@ -27,37 +32,57 @@ export const macosManageWindows = tool('macos_manage_windows', {
   description:
     'Window operations across all visible apps: list all windows with their bounds, focus an app window, move or resize a window, minimize/restore, toggle fullscreen, or close. List and focus do not require Accessibility; all other operations do. When app_name and window_title are both given, window_title takes precedence.',
   annotations: { readOnlyHint: false, openWorldHint: false },
-  input: z.object({
-    action: z
-      .enum(['list', 'focus', 'move', 'resize', 'move_resize', 'minimize', 'fullscreen', 'close'])
-      .describe('Operation to perform.'),
-    app_name: z
-      .string()
-      .optional()
-      .describe('Target application name. Targets the frontmost window of this app.'),
-    window_title: z
-      .string()
-      .optional()
-      .describe('Exact window title. Takes precedence over app_name when both are provided.'),
-    x: z
-      .number()
-      .optional()
-      .describe('Left edge x-coordinate for move/move_resize. Screen coordinates.'),
-    y: z
-      .number()
-      .optional()
-      .describe('Top edge y-coordinate for move/move_resize. Screen coordinates.'),
-    width: z.number().optional().describe('Window width in pixels for resize/move_resize.'),
-    height: z.number().optional().describe('Window height in pixels for resize/move_resize.'),
-    minimized: z
-      .boolean()
-      .optional()
-      .describe('For minimize: true=minimize, false=restore from Dock.'),
-    fullscreen: z
-      .boolean()
-      .optional()
-      .describe('For fullscreen: true=enter fullscreen, false=exit fullscreen.'),
-  }),
+  input: withActionRequirements(
+    z.object({
+      action: z
+        .enum(['list', 'focus', 'move', 'resize', 'move_resize', 'minimize', 'fullscreen', 'close'])
+        .describe('Operation to perform.'),
+      app_name: z
+        .string()
+        .optional()
+        .describe('Target application name. Targets the frontmost window of this app.'),
+      window_title: z
+        .string()
+        .optional()
+        .describe('Exact window title. Takes precedence over app_name when both are provided.'),
+      x: z
+        .number()
+        .optional()
+        .describe('Left edge x-coordinate for move/move_resize. Screen coordinates.'),
+      y: z
+        .number()
+        .optional()
+        .describe('Top edge y-coordinate for move/move_resize. Screen coordinates.'),
+      width: z
+        .number()
+        .positive()
+        .optional()
+        .describe('Window width in pixels for resize/move_resize. Must be greater than 0.'),
+      height: z
+        .number()
+        .positive()
+        .optional()
+        .describe('Window height in pixels for resize/move_resize. Must be greater than 0.'),
+      minimized: z
+        .boolean()
+        .optional()
+        .describe('For minimize: true=minimize, false=restore from Dock.'),
+      fullscreen: z
+        .boolean()
+        .optional()
+        .describe('For fullscreen: true=enter fullscreen, false=exit fullscreen.'),
+    }),
+    'action',
+    {
+      focus: [TARGET],
+      move: [TARGET, ['x'], ['y']],
+      resize: [TARGET, ['width'], ['height']],
+      move_resize: [TARGET, ['x'], ['y'], ['width'], ['height']],
+      minimize: [TARGET],
+      fullscreen: [TARGET],
+      close: [TARGET],
+    },
+  ),
   output: z.object({
     action: z.string().describe('The action that was performed.'),
     // list
@@ -78,9 +103,9 @@ export const macosManageWindows = tool('macos_manage_windows', {
     {
       reason: 'accessibility_required',
       code: JsonRpcErrorCode.Forbidden,
-      when: 'Any mutating action called without Accessibility permission.',
+      when: 'A mutating action or focus is denied Accessibility or Automation permission.',
       recovery:
-        'Grant Accessibility in System Settings > Privacy & Security > Accessibility for your terminal or MCP host app.',
+        'Grant the permission the error names (Accessibility, or Automation for the named app) in System Settings > Privacy & Security for your terminal or MCP host app.',
       thrownBy: 'service',
     },
     {
@@ -142,13 +167,7 @@ export const macosManageWindows = tool('macos_manage_windows', {
     const findScript = buildFindWindowScript(input.app_name, input.window_title);
 
     if (input.action === 'focus') {
-      const appName = input.app_name ?? input.window_title;
-      if (!appName)
-        throw ctx.fail(
-          'window_not_found',
-          'app_name or window_title required for focus',
-          ctx.recoveryFor('window_not_found'),
-        );
+      const target = input.app_name || input.window_title;
       try {
         if (input.app_name) {
           const escapedApp = JSON.stringify(input.app_name);
@@ -168,10 +187,11 @@ export const macosManageWindows = tool('macos_manage_windows', {
             ctx,
           );
         }
-      } catch {
+      } catch (err: unknown) {
+        if (isPermissionDenial(err)) throw err;
         throw ctx.fail(
           'window_not_found',
-          `No window found for "${appName}"`,
+          `No window found for "${target}"`,
           ctx.recoveryFor('window_not_found'),
         );
       }
@@ -179,7 +199,7 @@ export const macosManageWindows = tool('macos_manage_windows', {
       if (!winState)
         throw ctx.fail(
           'window_not_found',
-          `No window found for "${appName}"`,
+          `No window found for "${target}"`,
           ctx.recoveryFor('window_not_found'),
         );
       return { action: 'focus', success: true, window: winState };
@@ -188,36 +208,24 @@ export const macosManageWindows = tool('macos_manage_windows', {
     // All remaining actions require Accessibility
     const winState = await getWindowState(osascript, input.app_name, input.window_title, ctx);
     if (!winState) {
-      const target = input.window_title ?? input.app_name ?? 'unknown';
-      throw ctx.fail('window_not_found', `No window found for "${target}"`, {
-        recovery: {
-          hint: 'Call with action=list to see all visible windows and their exact titles.',
-        },
-      });
+      const target = input.window_title || input.app_name;
+      throw ctx.fail(
+        'window_not_found',
+        `No window found for "${target}"`,
+        ctx.recoveryFor('window_not_found'),
+      );
     }
 
     switch (input.action) {
       case 'move': {
-        if (input.x === undefined || input.y === undefined)
-          throw new Error('x and y are required for move');
         await osascript.runJxa(`${findScript}; win.position = [${input.x}, ${input.y}];`, ctx);
         break;
       }
       case 'resize': {
-        if (input.width === undefined || input.height === undefined)
-          throw new Error('width and height are required for resize');
         await osascript.runJxa(`${findScript}; win.size = [${input.width}, ${input.height}];`, ctx);
         break;
       }
       case 'move_resize': {
-        if (
-          input.x === undefined ||
-          input.y === undefined ||
-          input.width === undefined ||
-          input.height === undefined
-        ) {
-          throw new Error('x, y, width, and height are required for move_resize');
-        }
         await osascript.runJxa(
           `${findScript}; win.position = [${input.x}, ${input.y}]; win.size = [${input.width}, ${input.height}];`,
           ctx,
@@ -393,7 +401,9 @@ async function getWindowState(
     const raw = JSON.parse(stdout || 'null') as Omit<WindowInfo, 'display_index'> | null;
     if (!raw) return null;
     return { ...raw, display_index: resolveDisplayIndex(raw.x, raw.y, screenFrames) };
-  } catch {
+  } catch (err: unknown) {
+    // A denial is not a missing window — let it reach the caller with its own reason.
+    if (isPermissionDenial(err)) throw err;
     return null;
   }
 }

@@ -85,10 +85,25 @@ describe('macosControlAudio', () => {
     expect(result.input?.name).toBe('MacBook Pro Microphone');
   });
 
-  it('switch_output requires device param', async () => {
+  it('switch_output without device is rejected by the input schema', () => {
+    expect(() => macosControlAudio.input.parse({ action: 'switch_output' })).toThrow();
+  });
+
+  it('switch_output forwards the service device_not_found for a present-but-unknown device', async () => {
+    const svc = makeAudioService();
+    svc.switchDevice.mockRejectedValue(
+      Object.assign(new Error('No output device matching "Zz" found.'), {
+        code: -32001,
+        data: { reason: 'device_not_found' },
+      }),
+    );
+    vi.mocked(getAudioService).mockReturnValue(svc as never);
     const ctx = createMockContext({ errors: macosControlAudio.errors });
     await expect(
-      macosControlAudio.handler(macosControlAudio.input.parse({ action: 'switch_output' }), ctx),
+      macosControlAudio.handler(
+        macosControlAudio.input.parse({ action: 'switch_output', device: 'Zz' }),
+        ctx,
+      ),
     ).rejects.toMatchObject({ data: { reason: 'device_not_found' } });
   });
 
@@ -105,11 +120,15 @@ describe('macosControlAudio', () => {
     expect(result.device?.name).toBe('External Headphones');
   });
 
-  it('switch_input requires device param', async () => {
-    const ctx = createMockContext({ errors: macosControlAudio.errors });
-    await expect(
-      macosControlAudio.handler(macosControlAudio.input.parse({ action: 'switch_input' }), ctx),
-    ).rejects.toMatchObject({ data: { reason: 'device_not_found' } });
+  it('switch_input without device is rejected by the input schema', () => {
+    expect(() => macosControlAudio.input.parse({ action: 'switch_input' })).toThrow();
+    expect(() => macosControlAudio.input.parse({ action: 'switch_input', device: '' })).toThrow();
+  });
+
+  it('device_not_found is marked as service-thrown in the contract', () => {
+    expect(macosControlAudio.errors?.find((e) => e.reason === 'device_not_found')).toMatchObject({
+      thrownBy: 'service',
+    });
   });
 
   it('formats list output with device details', () => {

@@ -77,6 +77,25 @@ describe('macosControlSystem', () => {
     expect(pmsetCall![1]).toContain('displaysleepnow');
   });
 
+  it('sleep_display keeps the command line out of a pmset failure', async () => {
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      cb(
+        Object.assign(new Error('Command failed: pmset displaysleepnow\npmset: error'), {
+          code: 1 as unknown as string,
+          stderr: 'pmset: error',
+        }),
+      );
+      return { pid: 1 };
+    });
+    const ctx = createMockContext();
+    const err = (await Promise.resolve(
+      macosControlSystem.handler(macosControlSystem.input.parse({ action: 'sleep_display' }), ctx),
+    ).catch((e: unknown) => e)) as Error;
+    expect(err.message).toContain('pmset: error');
+    expect(err.message).not.toContain('Command failed');
+    expect(err.message).not.toContain('displaysleepnow');
+  });
+
   it('lock uses osascript keystroke when Accessibility is available', async () => {
     const svc = makeOsascript();
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);

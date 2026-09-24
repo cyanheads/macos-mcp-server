@@ -9,6 +9,7 @@ import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
+import { execFailure } from '@/utils/exec-failure.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -41,12 +42,7 @@ export class DisplayService {
       const result = await execFile(DISPLAYPLACER, args, { timeout: 15_000 });
       return (result.stdout ?? '').trim();
     } catch (err: unknown) {
-      const e = err as {
-        code?: string | number;
-        message?: string;
-        stdout?: string;
-        stderr?: string;
-      };
+      const e = err as { code?: string | number; stdout?: string };
       if (e.code === 'ENOENT') {
         throw new McpError(JsonRpcErrorCode.ServiceUnavailable, 'displayplacer is not installed.', {
           reason: 'displayplacer_not_found',
@@ -54,12 +50,8 @@ export class DisplayService {
         });
       }
       // displayplacer list exits non-zero when displays change — capture stdout anyway
-      if (e.stdout) return (e.stdout ?? '').trim();
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
-        `displayplacer failed: ${e.message ?? 'unknown error'}`,
-        { args },
-      );
+      if (e.stdout) return e.stdout.trim();
+      throw execFailure('displayplacer', err);
     }
   }
 

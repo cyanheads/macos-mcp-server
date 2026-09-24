@@ -14,9 +14,15 @@
  * are read off each definition's own `errors[]` so the assertions track the
  * contract rather than pinning prose.
  *
+ * Permission denials are raised by the osascript service, not a handler, so
+ * those cases drive the real `OsascriptService` over a faked `execFile` with
+ * the stderr macOS actually prints; the hint on the wire is the one the service
+ * builds for the permission that was denied.
+ *
  * @module tests/tools/error-contract-recovery.test
  */
 
+import { tmpdir } from 'node:os';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -66,6 +72,7 @@ vi.mock('node:child_process', () => ({
   execFile: execFileMock,
 }));
 
+import { macosControlAppearance } from '@/mcp-server/tools/definitions/macos-control-appearance.tool.js';
 import { macosControlAudio } from '@/mcp-server/tools/definitions/macos-control-audio.tool.js';
 import { macosManageApps } from '@/mcp-server/tools/definitions/macos-manage-apps.tool.js';
 import { macosManageDisplays } from '@/mcp-server/tools/definitions/macos-manage-displays.tool.js';
@@ -76,12 +83,33 @@ import { getAudioService } from '@/services/audio/audio-service.js';
 import { getDisplayService } from '@/services/display/display-service.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 
+const { OsascriptService } = await vi.importActual<
+  typeof import('@/services/osascript/osascript-service.js')
+>('@/services/osascript/osascript-service.js');
+
 /** Whatever the framework's contract runner returns — never re-declared locally. */
 type ToolContractResult = Awaited<ReturnType<typeof runToolContract>>;
 
 type AnyTool = {
   errors?: ReadonlyArray<{ reason: string; recovery: string }>;
 };
+
+/** Real osascript stderr for the denials the service classifies. */
+const ACCESSIBILITY_DENIED =
+  'execution error: System Events got an error: osascript is not allowed assistive access. (-25211)';
+const AUTOMATION_DENIED_FINDER =
+  'execution error: Not authorized to send Apple events to Finder. (-1743)';
+const AUTOMATION_DENIED_SYSTEM_EVENTS =
+  'execution error: Not authorized to send Apple events to System Events. (-1743)';
+const FINDER_HANDLER_ERROR =
+  '29:72: execution error: Finder got an error: Handler can’t handle objects of this class. (-10010)';
+/** Finder with no window open: `-1719` is errAEIllegalIndex here, not a denial. */
+const FINDER_NO_WINDOW_JXA = 'execution error: Error: Error: Invalid index. (-1719)';
+/** System Events with no frontmost process: the `[0]` of an empty `whose` result. */
+const NO_FRONTMOST_JXA = 'execution error: Error: Error: Invalid index. (-1719)';
+
+const MISSING_PATH = '/zz/no/such/path/qx.txt';
+const EXISTING_DIR = tmpdir();
 
 /** The `recovery` string a definition declares for one reason. */
 function declaredRecovery(definition: AnyTool, reason: string): string {
@@ -97,6 +125,17 @@ function contentText(result: ToolContractResult): string {
     .join('\n');
 }
 
+/** Asserts a rejected call carries the reason and puts `hint` on both surfaces. */
+function expectHintOnBothSurfaces(result: ToolContractResult, reason: string, hint: string): void {
+  expect(result.isError).toBe(true);
+  expect(result.structuredContent).toMatchObject({
+    error: { data: { reason, recovery: { hint } } },
+  });
+  const text = contentText(result);
+  expect(text).toContain(hint);
+  expect(text).toContain(`(reason ${reason}`);
+}
+
 /**
  * Asserts a rejected call carries the reason and puts the declared recovery
  * hint on both the structured and rendered surfaces.
@@ -106,13 +145,7 @@ function expectRecoveryOnBothSurfaces(
   definition: AnyTool,
   reason: string,
 ): void {
-  const hint = declaredRecovery(definition, reason);
-
-  expect(result.isError).toBe(true);
-  expect(result.structuredContent).toMatchObject({
-    error: { data: { reason, recovery: { hint } } },
-  });
-  expect(contentText(result)).toContain(hint);
+  expectHintOnBothSurfaces(result, reason, declaredRecovery(definition, reason));
 }
 
 function makeOsascript(overrides: Record<string, unknown> = {}) {
@@ -121,6 +154,32 @@ function makeOsascript(overrides: Record<string, unknown> = {}) {
     runJxa: vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' }),
     ...overrides,
   };
+}
+
+/**
+ * Swaps in the real OsascriptService. Scripts matching `fail` exit non-zero
+ * with `stderr`; every other osascript call answers `ok` (the running check's
+ * `true`, or an empty success).
+ */
+function realOsascript(stderr: string, fail: (script: string) => boolean, ok = 'true'): void {
+  execFileMock.mockImplementation((cmd, args, _opts, cb) => {
+    const script = args.at(-1) ?? '';
+    if (cmd === 'osascript' && fail(script)) {
+      cb(
+        Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\n${stderr}`), {
+          code: 1 as unknown as string,
+          stdout: '',
+          stderr,
+        }),
+      );
+    } else if (cmd === 'osascript' && script.includes('NSScreen')) {
+      cb(null, { stdout: '[]', stderr: '' });
+    } else {
+      cb(null, { stdout: cmd === 'osascript' ? ok : '', stderr: '' });
+    }
+    return { pid: 1 };
+  });
+  vi.mocked(getOsascriptService).mockReturnValue(new OsascriptService() as never);
 }
 
 describe('error contract — declared recovery reaches both client surfaces', () => {
@@ -135,20 +194,34 @@ describe('error contract — declared recovery reaches both client surfaces', ()
       listDisplays: vi.fn().mockResolvedValue({ displays: [], current_config: '' }),
       applyLayout: vi.fn().mockResolvedValue(undefined),
     } as never);
+    execFileMock.mockReset();
     execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
       cb(null, { stdout: '', stderr: '' });
       return { pid: 1 };
     });
   });
 
-  it('macos_control_audio switch_output without device forwards device_not_found recovery', async () => {
-    const result = await runToolContract(macosControlAudio, { action: 'switch_output' });
-    expectRecoveryOnBothSurfaces(result, macosControlAudio, 'device_not_found');
-  });
-
-  it('macos_control_audio switch_input without device forwards device_not_found recovery', async () => {
-    const result = await runToolContract(macosControlAudio, { action: 'switch_input' });
-    expectRecoveryOnBothSurfaces(result, macosControlAudio, 'device_not_found');
+  describe('a missing per-action argument is invalid_arguments, not a domain reason', () => {
+    for (const [tool, args, hint] of [
+      [macosControlAudio, { action: 'switch_output' }, 'Provide device.'],
+      [macosControlAudio, { action: 'switch_input' }, 'Provide device.'],
+      [macosManageWindows, { action: 'focus' }, 'app_name'],
+      [macosManageApps, { action: 'quit' }, 'Provide app_name.'],
+      [macosManageFinder, { action: 'reveal' }, 'Provide path.'],
+    ] as const) {
+      it(`${JSON.stringify(args)} on ${(tool as { name: string }).name}`, async () => {
+        const result = await runToolContract(tool as never, args as never);
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: { code: -32602, data: { reason: 'invalid_arguments' } },
+        });
+        const recovery = (
+          result.structuredContent as { error: { data: { recovery: { hint: string } } } }
+        ).error.data.recovery.hint;
+        expect(recovery).toContain(hint);
+        expect(contentText(result)).toContain('(reason invalid_arguments)');
+      });
+    }
   });
 
   it('macos_manage_displays forwards layout_not_found recovery on unparseable layout config', async () => {
@@ -159,49 +232,107 @@ describe('error contract — declared recovery reaches both client surfaces', ()
     expectRecoveryOnBothSurfaces(result, macosManageDisplays, 'layout_not_found');
   });
 
-  it('macos_manage_windows focus without a target forwards window_not_found recovery', async () => {
-    const result = await runToolContract(macosManageWindows, { action: 'focus' });
-    expectRecoveryOnBothSurfaces(result, macosManageWindows, 'window_not_found');
-  });
-
-  it('macos_manage_apps quit without app_name forwards not_running recovery', async () => {
-    const result = await runToolContract(macosManageApps, { action: 'quit' });
-    expectRecoveryOnBothSurfaces(result, macosManageApps, 'not_running');
-  });
-
-  it('macos_manage_apps frontmost with no result forwards app_not_found recovery', async () => {
-    vi.mocked(getOsascriptService).mockReturnValue(
-      makeOsascript({
-        runJxa: vi.fn().mockResolvedValue({ stdout: 'null', stderr: '' }),
-      }) as never,
-    );
+  it('macos_manage_apps frontmost whose script reports no frontmost process forwards no_frontmost_app recovery', async () => {
+    realOsascript('', () => false, 'null');
     const result = await runToolContract(macosManageApps, { action: 'frontmost' });
-    expectRecoveryOnBothSurfaces(result, macosManageApps, 'app_not_found');
+    expectRecoveryOnBothSurfaces(result, macosManageApps, 'no_frontmost_app');
+    expect(result.structuredContent).toMatchObject({ error: { code: -32001 } });
   });
 
-  it('macos_manage_finder reveal without path forwards path_not_found recovery', async () => {
-    const result = await runToolContract(macosManageFinder, { action: 'reveal' });
-    expectRecoveryOnBothSurfaces(result, macosManageFinder, 'path_not_found');
+  it('macos_manage_apps frontmost failing with Invalid index (-1719) forwards no_frontmost_app, not -32603', async () => {
+    realOsascript(NO_FRONTMOST_JXA, () => true);
+    const result = await runToolContract(macosManageApps, { action: 'frontmost' });
+    expectRecoveryOnBothSurfaces(result, macosManageApps, 'no_frontmost_app');
+    expect(result.structuredContent).toMatchObject({ error: { code: -32001 } });
+  });
+
+  it('macos_manage_apps frontmost keeps an Accessibility denial as accessibility_required', async () => {
+    realOsascript(ACCESSIBILITY_DENIED, () => true);
+    const result = await runToolContract(macosManageApps, { action: 'frontmost' });
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32005, data: { reason: 'accessibility_required' } },
+    });
+  });
+
+  for (const [args, stderr] of [
+    [{ app_name: 'ZzNonexistentAppQx' }, "Unable to find application named 'ZzNonexistentAppQx'"],
+    [
+      { bundle_id: 'com.zz.nonexistent.qx' },
+      'LSCopyApplicationURLsForBundleIdentifier() failed while trying to determine the application with bundle identifier com.zz.nonexistent.qx.',
+    ],
+  ] as const) {
+    it(`macos_manage_apps launch ${JSON.stringify(args)} of an uninstalled app forwards app_not_found recovery`, async () => {
+      execFileMock.mockImplementation((cmd, argv, _opts, cb) => {
+        cb(
+          Object.assign(new Error(`Command failed: ${cmd} ${argv.join(' ')}\n${stderr}`), {
+            code: 1 as unknown as string,
+            stderr,
+          }),
+        );
+        return { pid: 1 };
+      });
+      const result = await runToolContract(macosManageApps, { action: 'launch', ...args });
+      expectRecoveryOnBothSurfaces(result, macosManageApps, 'app_not_found');
+      expect(JSON.stringify(result)).not.toContain('Command failed');
+    });
+  }
+
+  it('macos_manage_apps quit on an app that is not running forwards not_running recovery', async () => {
+    realOsascript('', () => false, 'false');
+    const result = await runToolContract(macosManageApps, {
+      action: 'quit',
+      app_name: 'ZzNonexistentAppQx',
+    });
+    expectRecoveryOnBothSurfaces(result, macosManageApps, 'not_running');
+    expect(result.structuredContent).toMatchObject({ error: { code: -32001 } });
   });
 
   it('macos_manage_finder get_selection forwards finder_not_open recovery when no window is open', async () => {
-    vi.mocked(getOsascriptService).mockReturnValue(
-      makeOsascript({
-        runJxa: vi.fn().mockRejectedValue(new Error('Invalid index')),
-      }) as never,
-    );
+    realOsascript(FINDER_NO_WINDOW_JXA, () => true);
     const result = await runToolContract(macosManageFinder, { action: 'get_selection' });
     expectRecoveryOnBothSurfaces(result, macosManageFinder, 'finder_not_open');
   });
 
-  it('macos_manage_finder get_selection forwards accessibility_required recovery when automation is denied', async () => {
-    vi.mocked(getOsascriptService).mockReturnValue(
-      makeOsascript({
-        runJxa: vi.fn().mockRejectedValue(new Error('not allowed to send Apple events')),
-      }) as never,
-    );
-    const result = await runToolContract(macosManageFinder, { action: 'get_selection' });
-    expectRecoveryOnBothSurfaces(result, macosManageFinder, 'accessibility_required');
+  for (const action of ['trash', 'open_with'] as const) {
+    it(`macos_manage_finder ${action} on a nonexistent path forwards path_not_found recovery`, async () => {
+      const result = await runToolContract(macosManageFinder, { action, path: MISSING_PATH });
+      expectRecoveryOnBothSurfaces(result, macosManageFinder, 'path_not_found');
+      expect(result.structuredContent).toMatchObject({ error: { code: -32001 } });
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it('macos_manage_finder open_with with an unknown app forwards app_not_found recovery', async () => {
+    execFileMock.mockImplementation((cmd, args, _opts, cb) => {
+      const stderr = "Unable to find application named 'ZzNonexistentAppQx'";
+      cb(
+        Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\n${stderr}`), {
+          code: 1 as unknown as string,
+          stderr,
+        }),
+      );
+      return { pid: 1 };
+    });
+    const result = await runToolContract(macosManageFinder, {
+      action: 'open_with',
+      path: EXISTING_DIR,
+      app_name: 'ZzNonexistentAppQx',
+    });
+    expectRecoveryOnBothSurfaces(result, macosManageFinder, 'app_not_found');
+    expect(contentText(result)).not.toContain('Command failed');
+    expect(JSON.stringify(result.structuredContent)).not.toContain('open -a');
+  });
+
+  it('macos_manage_finder trash on a path Finder refuses forwards trash_refused recovery', async () => {
+    realOsascript(FINDER_HANDLER_ERROR, () => true);
+    const result = await runToolContract(macosManageFinder, {
+      action: 'trash',
+      path: EXISTING_DIR,
+    });
+    expectRecoveryOnBothSurfaces(result, macosManageFinder, 'trash_refused');
+    expect(result.structuredContent).toMatchObject({ error: { code: -32005 } });
+    expect(contentText(result)).toContain('(-10010)');
+    expect(JSON.stringify(result.structuredContent)).not.toContain('delete POSIX file');
   });
 
   it('macos_manage_focus set forwards shortcuts_unavailable recovery when the CLI is missing', async () => {
@@ -213,5 +344,54 @@ describe('error contract — declared recovery reaches both client surfaces', ()
     });
     const result = await runToolContract(macosManageFocus, { action: 'set', mode: 'Work' });
     expectRecoveryOnBothSurfaces(result, macosManageFocus, 'shortcuts_unavailable');
+  });
+});
+
+describe('error contract — service-raised accessibility_required reaches both surfaces', () => {
+  const ACCESSIBILITY_HINT =
+    'Grant Accessibility in System Settings > Privacy & Security > Accessibility for your terminal or MCP host app.';
+
+  beforeEach(() => {
+    execFileMock.mockReset();
+  });
+
+  it('macos_manage_apps hide on an Accessibility denial', async () => {
+    realOsascript(ACCESSIBILITY_DENIED, (s) => s.includes('.visible ='), '4397');
+    const result = await runToolContract(macosManageApps, { action: 'hide', app_name: 'Finder' });
+    expectHintOnBothSurfaces(result, 'accessibility_required', ACCESSIBILITY_HINT);
+    expect(result.structuredContent).toMatchObject({ error: { code: -32005 } });
+  });
+
+  it('macos_manage_windows move on an Accessibility denial', async () => {
+    realOsascript(ACCESSIBILITY_DENIED, () => true);
+    const result = await runToolContract(macosManageWindows, {
+      action: 'move',
+      app_name: 'Finder',
+      x: 0,
+      y: 0,
+    });
+    expectHintOnBothSurfaces(result, 'accessibility_required', ACCESSIBILITY_HINT);
+  });
+
+  it('macos_manage_finder get_selection on an Automation > Finder denial (-1743)', async () => {
+    realOsascript(AUTOMATION_DENIED_FINDER, () => true);
+    const result = await runToolContract(macosManageFinder, { action: 'get_selection' });
+    expectRecoveryOnBothSurfaces(result, macosManageFinder, 'accessibility_required');
+    expect(contentText(result)).toContain('Automation permission denied');
+  });
+
+  it('macos_manage_finder trash on an Automation > Finder denial is not trash_refused', async () => {
+    realOsascript(AUTOMATION_DENIED_FINDER, () => true);
+    const result = await runToolContract(macosManageFinder, {
+      action: 'trash',
+      path: EXISTING_DIR,
+    });
+    expectRecoveryOnBothSurfaces(result, macosManageFinder, 'accessibility_required');
+  });
+
+  it('macos_control_appearance set on an Automation > System Events denial', async () => {
+    realOsascript(AUTOMATION_DENIED_SYSTEM_EVENTS, () => true);
+    const result = await runToolContract(macosControlAppearance, { action: 'set', mode: 'dark' });
+    expectRecoveryOnBothSurfaces(result, macosControlAppearance, 'accessibility_required');
   });
 });

@@ -29,11 +29,9 @@ describe('macosManageFocus', () => {
     }
   }, 10_000);
 
-  it('set requires mode', async () => {
-    const ctx = createMockContext({ errors: macosManageFocus.errors });
-    await expect(
-      macosManageFocus.handler(macosManageFocus.input.parse({ action: 'set' }), ctx),
-    ).rejects.toThrow('mode is required');
+  it('set without mode is rejected by the input schema', () => {
+    expect(() => macosManageFocus.input.parse({ action: 'set' })).toThrow();
+    expect(() => macosManageFocus.input.parse({ action: 'set', mode: '' })).toThrow();
   });
 
   it('formats get output with status and reason', () => {
