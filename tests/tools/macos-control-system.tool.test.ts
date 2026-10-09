@@ -132,7 +132,7 @@ describe('macosControlSystem', () => {
     expect(result.success).toBe(true);
   });
 
-  it('lock throws when both osascript and ScreenSaverEngine fail', async () => {
+  it('lock throws Forbidden (-32005) when both osascript and ScreenSaverEngine fail', async () => {
     const svc = makeOsascript();
     svc.runAppleScript.mockRejectedValue(new Error('Accessibility denied'));
     vi.mocked(getOsascriptService).mockReturnValue(svc as never);
@@ -145,7 +145,10 @@ describe('macosControlSystem', () => {
     const ctx = createMockContext();
     await expect(
       macosControlSystem.handler(macosControlSystem.input.parse({ action: 'lock' }), ctx),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      code: -32005,
+      message: expect.stringContaining('Lock screen failed'),
+    });
   });
 
   it('formats lock success output', () => {
