@@ -1,6 +1,6 @@
 {
   "name": "macos-mcp-server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Control macOS system settings, apps, windows, audio, displays, screenshots, and Focus mode via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",

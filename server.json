@@ -6,14 +6,14 @@
     "url": "https://github.com/cyanheads/macos-mcp-server",
     "source": "github"
   },
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/macos-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "environmentVariables": [
         {
           "name": "MACOS_SCREENSHOT_DIR",
@@ -46,7 +46,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/macos-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "environmentVariables": [
         {
           "name": "MCP_TRANSPORT_TYPE",
