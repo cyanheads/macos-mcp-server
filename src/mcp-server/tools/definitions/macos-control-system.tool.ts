@@ -6,6 +6,7 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { forbidden } from '@cyanheads/mcp-ts-core/errors';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 import { execFailure } from '@/utils/exec-failure.js';
 
@@ -57,7 +58,7 @@ export const macosControlSystem = tool('macos_control_system', {
         return { success: true, action: input.action };
       } catch {
         // Both paths failed; surface a structured error
-        throw new Error(
+        throw forbidden(
           'Lock screen failed: Accessibility permission is needed for the keystroke method. ' +
             'Grant Accessibility in System Settings > Privacy & Security > Accessibility, or ' +
             'verify the ScreenSaverEngine binary exists at /System/Library/CoreServices/ScreenSaverEngine.app.',
