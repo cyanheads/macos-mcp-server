@@ -1,6 +1,6 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-09-24 17:07:53
+Generated on: 2026-10-09 06:49:10
 
 ```text
 macos-mcp-server/
@@ -128,9 +128,11 @@ macos-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
 ├── src/
