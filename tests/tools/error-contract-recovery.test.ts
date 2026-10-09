@@ -1,11 +1,11 @@
 /**
  * @fileoverview Recovery-hint forwarding across the error contract surface.
  *
- * Each tool's `errors[]` entry declares a `recovery` string, but reaching the
- * client with it is opt-in per throw site — the site forwards
- * `ctx.recoveryFor(reason)` or passes its own `recovery` key. A site that does
- * neither ships `reason` with no hint, and the handler-level tests elsewhere in
- * `tests/tools/` pass either way because they assert only `data.reason`.
+ * Each tool's `errors[]` entry declares a `recovery` string. A throw site either
+ * passes its own `recovery` key or throws the bare `ctx.fail(reason, message)`,
+ * and the framework fills the declared hint at the contract boundary. A direct
+ * `handler()` call never sees that fill, so the handler-level tests elsewhere in
+ * `tests/tools/` cannot prove the hint reaches the client.
  *
  * These run each wired site through `runToolContract`, the production contract
  * boundary, and assert the declared hint lands on BOTH consumption surfaces:

@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/osascript/osascript-service.js', () => ({
@@ -104,6 +104,30 @@ async function failureOf(args: Record<string, unknown>): Promise<Error & { data?
   return err;
 }
 
+/** The `recovery` a reason declares in the tool's `errors[]`. */
+function declaredRecovery(reason: string): string {
+  const entry = macosManageFinder.errors?.find((e) => e.reason === reason);
+  if (!entry) throw new Error(`No errors[] entry declares reason "${reason}"`);
+  return entry.recovery;
+}
+
+/**
+ * Runs a call through `runToolContract` and returns its error envelope. The
+ * contract boundary fills a declared reason's recovery hint, which a direct
+ * `handler()` throw never carries.
+ */
+async function contractFailureOf(
+  args: Record<string, unknown>,
+): Promise<{ code: number; message: string; data: Record<string, unknown> }> {
+  const result = await runToolContract(macosManageFinder, args as never);
+  expect(result.isError).toBe(true);
+  return (
+    result.structuredContent as {
+      error: { code: number; message: string; data: Record<string, unknown> };
+    }
+  ).error;
+}
+
 describe('macosManageFinder', () => {
   beforeEach(() => {
     vi.mocked(getOsascriptService).mockReturnValue(makeOsascript() as never);
@@ -150,7 +174,7 @@ describe('macosManageFinder', () => {
 
   it('get_selection returns finder_not_open, not accessibility_required, when Finder reports no window (-1719)', async () => {
     failOsascriptWith(FINDER_NO_WINDOW_JXA);
-    const err = await failureOf({ action: 'get_selection' });
+    const err = await contractFailureOf({ action: 'get_selection' });
     expect(err).toMatchObject({
       code: -32001,
       data: {
@@ -211,7 +235,7 @@ describe('macosManageFinder', () => {
     it('on a nonexistent path throws path_not_found with the declared recovery and never calls Finder', async () => {
       const svc = makeOsascript();
       vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-      const err = await failureOf({ action: 'trash', path: MISSING_PATH });
+      const err = await contractFailureOf({ action: 'trash', path: MISSING_PATH });
       expect(err).toMatchObject({
         code: -32001,
         data: {
@@ -239,10 +263,10 @@ describe('macosManageFinder', () => {
 
     it('an existing path Finder refuses returns trash_refused with Finder’s error text and no script', async () => {
       failOsascriptWith(FINDER_HANDLER_ERROR);
-      const err = await failureOf({ action: 'trash', path: EXISTING_FILE });
+      const err = await contractFailureOf({ action: 'trash', path: EXISTING_FILE });
       expect(err).toMatchObject({
         code: -32005,
-        data: { reason: 'trash_refused', recovery: { hint: expect.any(String) } },
+        data: { reason: 'trash_refused', recovery: { hint: declaredRecovery('trash_refused') } },
       });
       expect(err.message).toContain('(-10010)');
       expect(err.message).not.toContain('delete POSIX file');
@@ -262,7 +286,7 @@ describe('macosManageFinder', () => {
 
   describe('open_with', () => {
     it('on a nonexistent path throws path_not_found and never calls open', async () => {
-      const err = await failureOf({
+      const err = await contractFailureOf({
         action: 'open_with',
         path: MISSING_PATH,
         app_name: 'TextEdit',
@@ -311,7 +335,7 @@ describe('macosManageFinder', () => {
         cb(execFailure(cmd, args, "Unable to find application named 'ZzNonexistentAppQx'"));
         return { pid: 1 };
       });
-      const err = await failureOf({
+      const err = await contractFailureOf({
         action: 'open_with',
         path: TMP,
         app_name: 'ZzNonexistentAppQx',
@@ -320,7 +344,7 @@ describe('macosManageFinder', () => {
         code: -32001,
         data: {
           reason: 'app_not_found',
-          recovery: { hint: expect.stringContaining('app_name') },
+          recovery: { hint: declaredRecovery('app_not_found') },
         },
       });
       expect(err.message).not.toContain('Command failed');

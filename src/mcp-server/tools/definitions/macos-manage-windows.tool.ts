@@ -189,19 +189,10 @@ export const macosManageWindows = tool('macos_manage_windows', {
         }
       } catch (err: unknown) {
         if (isPermissionDenial(err)) throw err;
-        throw ctx.fail(
-          'window_not_found',
-          `No window found for "${target}"`,
-          ctx.recoveryFor('window_not_found'),
-        );
+        throw ctx.fail('window_not_found', `No window found for "${target}"`);
       }
       const winState = await getWindowState(osascript, input.app_name, input.window_title, ctx);
-      if (!winState)
-        throw ctx.fail(
-          'window_not_found',
-          `No window found for "${target}"`,
-          ctx.recoveryFor('window_not_found'),
-        );
+      if (!winState) throw ctx.fail('window_not_found', `No window found for "${target}"`);
       return { action: 'focus', success: true, window: winState };
     }
 
@@ -209,11 +200,7 @@ export const macosManageWindows = tool('macos_manage_windows', {
     const winState = await getWindowState(osascript, input.app_name, input.window_title, ctx);
     if (!winState) {
       const target = input.window_title || input.app_name;
-      throw ctx.fail(
-        'window_not_found',
-        `No window found for "${target}"`,
-        ctx.recoveryFor('window_not_found'),
-      );
+      throw ctx.fail('window_not_found', `No window found for "${target}"`);
     }
 
     switch (input.action) {

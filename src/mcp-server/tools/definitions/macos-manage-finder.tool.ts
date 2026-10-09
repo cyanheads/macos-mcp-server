@@ -162,11 +162,7 @@ export const macosManageFinder = tool('macos_manage_finder', {
           if (isPermissionDenial(err)) throw err;
           const msg = (err as { message?: string }).message ?? '';
           if (msg.includes('Invalid index') || msg.includes('no front window')) {
-            throw ctx.fail(
-              'finder_not_open',
-              'No Finder window is open',
-              ctx.recoveryFor('finder_not_open'),
-            );
+            throw ctx.fail('finder_not_open', 'No Finder window is open');
           }
           throw err;
         }
@@ -175,11 +171,7 @@ export const macosManageFinder = tool('macos_manage_finder', {
       case 'reveal': {
         const path = suppliedArg(input.path, 'path');
         if (!path.startsWith('/'))
-          throw ctx.fail(
-            'path_not_found',
-            `Path "${path}" must be absolute`,
-            ctx.recoveryFor('path_not_found'),
-          );
+          throw ctx.fail('path_not_found', `Path "${path}" must be absolute`);
         try {
           await execFile('open', ['-R', path], { timeout: 10_000 });
         } catch (err: unknown) {
@@ -189,11 +181,7 @@ export const macosManageFinder = tool('macos_manage_finder', {
             msg.includes('does not exist') ||
             msg.includes('unable to find')
           ) {
-            throw ctx.fail(
-              'path_not_found',
-              `Path "${path}" does not exist.`,
-              ctx.recoveryFor('path_not_found'),
-            );
+            throw ctx.fail('path_not_found', `Path "${path}" does not exist.`);
           }
           throw execFailure('open', err);
         }
@@ -203,17 +191,9 @@ export const macosManageFinder = tool('macos_manage_finder', {
       case 'open_with': {
         const path = suppliedArg(input.path, 'path');
         if (!path.startsWith('/'))
-          throw ctx.fail(
-            'path_not_found',
-            `Path "${path}" must be absolute`,
-            ctx.recoveryFor('path_not_found'),
-          );
+          throw ctx.fail('path_not_found', `Path "${path}" must be absolute`);
         if (!(await pathExists(path)))
-          throw ctx.fail(
-            'path_not_found',
-            `Path "${path}" does not exist.`,
-            ctx.recoveryFor('path_not_found'),
-          );
+          throw ctx.fail('path_not_found', `Path "${path}" does not exist.`);
         const openArgs: string[] = [];
         if (input.app_name) openArgs.push('-a', input.app_name);
         openArgs.push(path);
@@ -222,18 +202,10 @@ export const macosManageFinder = tool('macos_manage_finder', {
         } catch (err: unknown) {
           const msg = execFailureDetail(err).toLowerCase();
           if (msg.includes('unable to find application')) {
-            throw ctx.fail(
-              'app_not_found',
-              `No application named "${input.app_name}" was found.`,
-              ctx.recoveryFor('app_not_found'),
-            );
+            throw ctx.fail('app_not_found', `No application named "${input.app_name}" was found.`);
           }
           if (msg.includes('does not exist')) {
-            throw ctx.fail(
-              'path_not_found',
-              `Path "${path}" does not exist.`,
-              ctx.recoveryFor('path_not_found'),
-            );
+            throw ctx.fail('path_not_found', `Path "${path}" does not exist.`);
           }
           throw execFailure('open', err);
         }
@@ -243,17 +215,9 @@ export const macosManageFinder = tool('macos_manage_finder', {
       case 'trash': {
         const path = suppliedArg(input.path, 'path');
         if (!path.startsWith('/'))
-          throw ctx.fail(
-            'path_not_found',
-            `Path "${path}" must be absolute`,
-            ctx.recoveryFor('path_not_found'),
-          );
+          throw ctx.fail('path_not_found', `Path "${path}" must be absolute`);
         if (!(await pathExists(path)))
-          throw ctx.fail(
-            'path_not_found',
-            `Path "${path}" does not exist.`,
-            ctx.recoveryFor('path_not_found'),
-          );
+          throw ctx.fail('path_not_found', `Path "${path}" does not exist.`);
         try {
           await osascript.runAppleScript(
             `tell application "Finder" to delete POSIX file ${JSON.stringify(path)}`,
@@ -266,7 +230,7 @@ export const macosManageFinder = tool('macos_manage_finder', {
           throw ctx.fail(
             'trash_refused',
             `Finder did not move "${path}" to the Trash: ${err.message.replace(/^osascript failed: /, '')}`,
-            ctx.recoveryFor('trash_refused'),
+            undefined,
             { cause: err },
           );
         }

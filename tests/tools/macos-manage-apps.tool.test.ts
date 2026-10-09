@@ -3,7 +3,7 @@
  * @module tests/tools/macos-manage-apps.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/osascript/osascript-service.js', () => ({
@@ -80,6 +80,22 @@ function declaredRecovery(reason: string): string {
   return entry.recovery;
 }
 
+/**
+ * Asserts a `runToolContract` result failed with `code` and `reason`, carrying
+ * that reason's declared recovery — the fill the framework applies at the
+ * contract boundary, which a direct `handler()` call never sees.
+ */
+function expectDeclaredFailure(
+  result: Awaited<ReturnType<typeof runToolContract>>,
+  code: number,
+  reason: string,
+): void {
+  expect(result.isError).toBe(true);
+  expect(result.structuredContent).toMatchObject({
+    error: { code, data: { reason, recovery: { hint: declaredRecovery(reason) } } },
+  });
+}
+
 /** Makes the next `execFile` call fail the way Node reports a non-zero exit. */
 function failExecWith(stderr: string): void {
   execFileMock.mockImplementationOnce((cmd, args, _opts, cb) => {
@@ -154,16 +170,8 @@ describe('macosManageApps', () => {
 
   it('frontmost with no app in front throws no_frontmost_app with its declared recovery', async () => {
     vi.mocked(getOsascriptService).mockReturnValue(makeOsascript({ jxaOut: 'null' }) as never);
-    const ctx = createMockContext({ errors: macosManageApps.errors });
-    await expect(
-      macosManageApps.handler(macosManageApps.input.parse({ action: 'frontmost' }), ctx),
-    ).rejects.toMatchObject({
-      code: -32001,
-      data: {
-        reason: 'no_frontmost_app',
-        recovery: { hint: declaredRecovery('no_frontmost_app') },
-      },
-    });
+    const result = await runToolContract(macosManageApps, { action: 'frontmost' });
+    expectDeclaredFailure(result, -32001, 'no_frontmost_app');
   });
 
   it('launch by bundle_id passes -b and the id as discrete argv', async () => {
@@ -193,17 +201,17 @@ describe('macosManageApps', () => {
     it('quit on an app that is not running throws not_running and sends no quit', async () => {
       const svc = makeRunningOsascript({});
       vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-      const ctx = createMockContext({ errors: macosManageApps.errors });
-      await expect(
-        macosManageApps.handler(
-          macosManageApps.input.parse({ action: 'quit', app_name: 'ZzNonexistentAppQx' }),
-          ctx,
-        ),
-      ).rejects.toMatchObject({
-        code: -32001,
-        data: {
-          reason: 'not_running',
-          recovery: { hint: 'The app is not running. Use action=launch to start it first.' },
+      const result = await runToolContract(macosManageApps, {
+        action: 'quit',
+        app_name: 'ZzNonexistentAppQx',
+      });
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: -32001,
+          data: {
+            reason: 'not_running',
+            recovery: { hint: 'The app is not running. Use action=launch to start it first.' },
+          },
         },
       });
       expect(scriptsOf(svc).some((s) => /\bto quit\b/.test(s))).toBe(false);
@@ -351,40 +359,29 @@ describe('macosManageApps', () => {
       );
       return { pid: 1 };
     });
-    const ctx = createMockContext({ errors: macosManageApps.errors });
-    const err = await Promise.resolve(
-      macosManageApps.handler(
-        macosManageApps.input.parse({ action: 'launch', app_name: 'DoesNotExist' }),
-        ctx,
-      ),
-    ).catch((e: unknown) => e);
-    expect(err).toMatchObject({
-      code: -32001,
-      data: { reason: 'app_not_found', recovery: { hint: declaredRecovery('app_not_found') } },
+    const result = await runToolContract(macosManageApps, {
+      action: 'launch',
+      app_name: 'DoesNotExist',
     });
-    // Error message must not expose the raw CLI command
-    expect((err as Error).message).not.toContain('open -a');
-    expect((err as Error).message).not.toContain('Command failed');
+    expectDeclaredFailure(result, -32001, 'app_not_found');
+    // The error must not expose the raw CLI command
+    expect(JSON.stringify(result)).not.toContain('open -a');
+    expect(JSON.stringify(result)).not.toContain('Command failed');
   });
 
   it('launch by an unknown bundle_id throws app_not_found with the declared recovery', async () => {
     failExecWith(
       'LSCopyApplicationURLsForBundleIdentifier() failed while trying to determine the application with bundle identifier com.zz.nonexistent.qx.',
     );
-    const ctx = createMockContext({ errors: macosManageApps.errors });
-    const err = (await Promise.resolve(
-      macosManageApps.handler(
-        macosManageApps.input.parse({ action: 'launch', bundle_id: 'com.zz.nonexistent.qx' }),
-        ctx,
-      ),
-    ).catch((e: unknown) => e)) as Error;
-    expect(err).toMatchObject({
-      code: -32001,
-      data: { reason: 'app_not_found', recovery: { hint: declaredRecovery('app_not_found') } },
+    const result = await runToolContract(macosManageApps, {
+      action: 'launch',
+      bundle_id: 'com.zz.nonexistent.qx',
     });
-    expect(err.message).toContain('com.zz.nonexistent.qx');
-    expect(err.message).not.toContain('Command failed');
-    expect(err.message).not.toContain('open -b');
+    expectDeclaredFailure(result, -32001, 'app_not_found');
+    const serialized = JSON.stringify(result);
+    expect(serialized).toContain('com.zz.nonexistent.qx');
+    expect(serialized).not.toContain('Command failed');
+    expect(serialized).not.toContain('open -b');
   });
 
   it('launch keeps the command line out of an unmapped open failure', async () => {

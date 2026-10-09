@@ -99,11 +99,7 @@ export const macosManageDisplays = tool('macos_manage_displays', {
     try {
       layouts = JSON.parse(config.displayLayouts || '{}') as Record<string, string>;
     } catch {
-      throw ctx.fail(
-        'layout_not_found',
-        'MACOS_DISPLAY_LAYOUTS is not valid JSON',
-        ctx.recoveryFor('layout_not_found'),
-      );
+      throw ctx.fail('layout_not_found', 'MACOS_DISPLAY_LAYOUTS is not valid JSON');
     }
 
     const layoutArgs = layouts[layoutName];

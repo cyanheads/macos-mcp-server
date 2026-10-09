@@ -206,12 +206,7 @@ export const macosManageApps = tool('macos_manage_apps', {
       }
 
       case 'frontmost': {
-        const noFrontmost = () =>
-          ctx.fail(
-            'no_frontmost_app',
-            'No frontmost application found',
-            ctx.recoveryFor('no_frontmost_app'),
-          );
+        const noFrontmost = () => ctx.fail('no_frontmost_app', 'No frontmost application found');
         // The script prints null when no process is frontmost rather than indexing
         // an empty result, which fails as "Invalid index (-1719)".
         const { stdout } = await osascript
@@ -279,11 +274,7 @@ export const macosManageApps = tool('macos_manage_apps', {
             // `open -b` with an unknown bundle identifier
             msg.includes('determine the application with bundle identifier')
           ) {
-            throw ctx.fail(
-              'app_not_found',
-              `Application "${target}" was not found.`,
-              ctx.recoveryFor('app_not_found'),
-            );
+            throw ctx.fail('app_not_found', `Application "${target}" was not found.`);
           }
           throw execFailure('open', err);
         }
@@ -294,7 +285,7 @@ export const macosManageApps = tool('macos_manage_apps', {
       case 'quit': {
         const name = suppliedArg(input.app_name, 'app_name');
         if (!(await isAppRunning(osascript, name, ctx)))
-          throw ctx.fail('not_running', `"${name}" is not running`, ctx.recoveryFor('not_running'));
+          throw ctx.fail('not_running', `"${name}" is not running`);
         await osascript.runAppleScript(`tell application ${JSON.stringify(name)} to quit`, ctx, {
           timeoutMs: 15_000,
         });
@@ -304,8 +295,7 @@ export const macosManageApps = tool('macos_manage_apps', {
       case 'force_quit': {
         const name = suppliedArg(input.app_name, 'app_name');
         const pid = await runningAppPid(osascript, name, ctx);
-        if (pid === undefined)
-          throw ctx.fail('not_running', `"${name}" is not running`, ctx.recoveryFor('not_running'));
+        if (pid === undefined) throw ctx.fail('not_running', `"${name}" is not running`);
         await execFile('kill', ['-9', String(pid)], { timeout: 5_000 }).catch((err: unknown) => {
           throw execFailure('kill', err);
         });
@@ -317,8 +307,7 @@ export const macosManageApps = tool('macos_manage_apps', {
       case 'show': {
         const name = suppliedArg(input.app_name, 'app_name');
         const pid = await runningAppPid(osascript, name, ctx);
-        if (pid === undefined)
-          throw ctx.fail('not_running', `"${name}" is not running`, ctx.recoveryFor('not_running'));
+        if (pid === undefined) throw ctx.fail('not_running', `"${name}" is not running`);
         const visible = input.action === 'show';
         await osascript.runJxa(
           [
