@@ -7,14 +7,71 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, timeout } from '@cyanheads/mcp-ts-core/errors';
 import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
+import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
+import { execFailureDetail } from '@/utils/exec-failure.js';
+import { markdownLiteral } from '@/utils/markdown-literal.js';
+import { parseJsonOutput } from '@/utils/parse-json-output.js';
 
 const execFile = promisify(execFileCallback);
 
-const SHORTCUTS_CLI = '/usr/bin/shortcuts';
+/**
+ * The part of `~/Library/DoNotDisturb/DB/Assertions.json` the status is read
+ * from: the first store's assertion records, each naming the Focus mode it holds.
+ */
+const FocusStateSchema = z.object({
+  data: z
+    .array(
+      z.object({
+        storeAssertionRecords: z
+          .array(
+            z.object({
+              assertionDetails: z
+                .object({ assertionDetailsModeIdentifier: z.string().optional() })
+                .optional(),
+            }),
+          )
+          .optional(),
+      }),
+    )
+    .optional(),
+});
 
-async function getFocusStatus(): Promise<{
+const UNKNOWN_STATUS_REASON =
+  'The Focus state file (~/Library/DoNotDisturb/DB/Assertions.json) could not be read or parsed, so the current Focus status is unknown.';
+
+const SET_FOCUS_SHORTCUT = 'Set Focus';
+const SET_TIMEOUT_MS = 15_000;
+
+/** What the shortcuts CLI prints, curly apostrophes included, for a name not in the library. */
+const NO_SUCH_SHORTCUT = 'Couldn’t find shortcut';
+
+/**
+ * Runs the Set Focus shortcut with `input` on stdin. `-i -` makes the CLI read
+ * stdin before it resolves the shortcut, so stdin is closed right after the
+ * write; left open, the call blocks until the timeout kills it. `signal`
+ * aborting kills the run and rejects with Node's `AbortError`.
+ */
+function runSetFocusShortcut(input: string, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = execFileCallback(
+      SYSTEM_BINARIES.shortcuts,
+      ['run', SET_FOCUS_SHORTCUT, '-i', '-'],
+      { timeout: SET_TIMEOUT_MS, signal },
+      (err) => (err ? reject(err) : resolve()),
+    );
+    // EPIPE when the child exits before reading its input; the exit callback reports the outcome.
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(input);
+  });
+}
+
+/**
+ * The Focus status, best effort: a read that fails reads as `unknown`. The
+ * caller's cancellation is rethrown rather than read as a failed read.
+ */
+async function getFocusStatus(signal: AbortSignal): Promise<{
   status: 'active' | 'inactive' | 'unknown';
   mode: string | null;
   reason?: string;
@@ -22,53 +79,43 @@ async function getFocusStatus(): Promise<{
   // Try defaults read from the Do Not Disturb domain (works on some configurations)
   try {
     const result = await execFile(
-      'defaults',
+      SYSTEM_BINARIES.defaults,
       ['read', '/Library/Preferences/com.apple.CommCenter.counts'],
-      {
-        timeout: 3_000,
-      },
+      { timeout: 3_000, signal },
     );
     const out = result.stdout ?? '';
     if (out.includes('FocusMode')) {
       return { status: 'active', mode: null };
     }
-  } catch {
+  } catch (err: unknown) {
+    if (signal.aborted) throw err;
     // Expected on most systems
   }
 
-  // Check Focus assertion database (macOS 13+ path, SIP-protected)
+  // Check the Focus assertion file, which the server process may not be able to read
+  let raw: string | undefined;
   try {
-    const dbPath = `${process.env.HOME}/Library/DoNotDisturb/DB/Assertions.json`;
-    const raw = await readFile(dbPath, 'utf-8');
-    const data = JSON.parse(raw) as {
-      data?: Array<{
-        storeAssertionRecords?: Array<{
-          assertionDetails?: { assertionDetailsModeIdentifier?: string };
-        }>;
-      }>;
-    };
-    const assertions = data.data?.[0]?.storeAssertionRecords ?? [];
-    if (assertions.length > 0) {
-      const mode = assertions[0]?.assertionDetails?.assertionDetailsModeIdentifier ?? null;
-      return { status: 'active', mode };
-    }
-    return { status: 'inactive', mode: null };
-  } catch {
-    // File unreadable (SIP-protected on macOS 13+) — expected failure
+    raw = await readFile(`${process.env.HOME}/Library/DoNotDisturb/DB/Assertions.json`, {
+      encoding: 'utf-8',
+      signal,
+    });
+  } catch (err: unknown) {
+    if (signal.aborted) throw err;
   }
+  // Unreadable, not JSON, or not that shape — the status is unknown, which get reports rather than throws
+  const state = raw === undefined ? undefined : parseJsonOutput(FocusStateSchema, raw);
+  if (!state) return { status: 'unknown', mode: null, reason: UNKNOWN_STATUS_REASON };
 
-  return {
-    status: 'unknown',
-    mode: null,
-    reason:
-      'macOS 13+ protects the Focus state database. Current focus status cannot be determined without entitlements.',
-  };
+  const [first] = state.data?.[0]?.storeAssertionRecords ?? [];
+  return first
+    ? { status: 'active', mode: first.assertionDetails?.assertionDetailsModeIdentifier ?? null }
+    : { status: 'inactive', mode: null };
 }
 
 export const macosManageFocus = tool('macos_manage_focus', {
   title: 'Manage macOS Focus Mode',
   description:
-    'Get or set Do Not Disturb / Focus mode. The get action is best-effort — macOS 13+ protects the Focus state database and the returned status may be "unknown" on some configurations. The set action requires the built-in "Set Focus" shortcut to exist in the Shortcuts app (present on macOS 12+). Mode names must exactly match configured Focus profiles (e.g. "Do Not Disturb", "Work", "Personal").',
+    'Get or set Do Not Disturb / Focus mode. The get action is best-effort: it reads the Focus state file in ~/Library/DoNotDisturb, which may be unreadable to the server process, and returns status "unknown" when that file cannot be read or parsed. The set action runs a shortcut named "Set Focus" from the Shortcuts library and passes {"mode": <mode>, "enabled": <enabled>} to it as JSON input. That shortcut is not built in: create it so it reads this input (e.g. with Get Dictionary from Input) and applies mode and enabled with the Set Focus action. Mode names must exactly match configured Focus names (e.g. "Do Not Disturb", "Work", "Personal").',
   annotations: { readOnlyHint: false, openWorldHint: false },
   input: withActionRequirements(
     z.object({
@@ -81,7 +128,7 @@ export const macosManageFocus = tool('macos_manage_focus', {
         .string()
         .optional()
         .describe(
-          'Focus mode name for action=set, e.g. "Do Not Disturb", "Work". Must match a configured Focus profile exactly.',
+          'Focus mode name for action=set, e.g. "Do Not Disturb", "Work". Must match a configured Focus name exactly, including case.',
         ),
       enabled: z
         .boolean()
@@ -98,45 +145,53 @@ export const macosManageFocus = tool('macos_manage_focus', {
       .enum(['active', 'inactive', 'unknown'])
       .optional()
       .describe(
-        'Current Focus status. Present for action=get. "unknown" when macOS cannot be queried without entitlements.',
+        'Current Focus status. Present for action=get. "unknown" when the Focus state file could not be read or parsed.',
       ),
     mode: z
       .string()
       .nullable()
       .optional()
       .describe(
-        'Active Focus mode name, or null when inactive or unknown. Present for action=get and action=set.',
+        'For action=get: the active Focus mode, or null when inactive or unknown. For action=set: the requested mode, as sent to the shortcut.',
       ),
     reason: z
       .string()
       .optional()
       .describe('Explanation when status is "unknown". Present for action=get.'),
     // set
+    enabled: z
+      .boolean()
+      .optional()
+      .describe(
+        'The requested state sent to the shortcut: true to turn the mode on, false to turn it off. Present for action=set.',
+      ),
     success: z
       .boolean()
       .optional()
-      .describe('True when the Focus mode was applied. Present for action=set.'),
+      .describe(
+        'True when the "Set Focus" shortcut finished without error. The Focus state is not read back. Present for action=set.',
+      ),
   }),
   errors: [
     {
       reason: 'shortcuts_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The shortcuts CLI is not available or the "Set Focus" shortcut does not exist.',
+      when: 'The shortcuts CLI is missing, or the Shortcuts library has no shortcut named "Set Focus".',
       recovery:
-        'Open the Shortcuts app, search for "Set Focus", and add it. The shortcut is built-in on macOS 12+.',
+        'Create a shortcut named "Set Focus" in the Shortcuts app that reads its input with Get Dictionary from Input and applies the "mode" and "enabled" values with the Set Focus action.',
     },
     {
-      reason: 'focus_not_found',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'The provided mode name does not match any known Focus profile.',
+      reason: 'shortcut_failed',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'The "Set Focus" shortcut ran and exited with an error; the message carries its error text.',
       recovery:
-        'Check System Settings > Focus for configured profile names. Names are case-sensitive and must match exactly.',
+        'Check that mode exactly matches a Focus name in System Settings > Focus, including case, and that the "Set Focus" shortcut reads its input as a dictionary with "mode" (text) and "enabled" (boolean) keys.',
     },
   ],
 
   async handler(input, ctx) {
     if (input.action === 'get') {
-      const result = await getFocusStatus();
+      const result = await getFocusStatus(ctx.signal);
       return { action: 'get', ...result };
     }
 
@@ -144,49 +199,60 @@ export const macosManageFocus = tool('macos_manage_focus', {
     const mode = suppliedArg(input.mode, 'mode');
     const enabled = input.enabled !== false; // default true
 
+    // Before the spawn too: Bun can still run a child whose signal already fired.
+    ctx.signal.throwIfAborted();
     try {
-      await execFile(SHORTCUTS_CLI, ['run', 'Set Focus', '-i', '-'], {
-        timeout: 15_000,
-      });
+      await runSetFocusShortcut(JSON.stringify({ mode, enabled }), ctx.signal);
     } catch (err: unknown) {
-      const e = err as {
-        code?: string | number;
-        message?: string;
-        stderr?: string;
-        killed?: boolean;
-      };
-      const msg = (e.message ?? e.stderr ?? '').toLowerCase();
+      // The caller's cancellation, not a shortcut failure.
+      if (ctx.signal.aborted) throw err;
+      const e = err as { code?: unknown; killed?: boolean; stderr?: unknown };
 
       if (e.code === 'ENOENT') {
-        throw ctx.fail('shortcuts_unavailable', 'shortcuts CLI not found at /usr/bin/shortcuts');
-      }
-      if (
-        msg.includes('not a shortcut') ||
-        msg.includes('no shortcut') ||
-        msg.includes('shortcut not found')
-      ) {
         throw ctx.fail(
           'shortcuts_unavailable',
-          'The "Set Focus" shortcut is not installed in the Shortcuts app',
+          `shortcuts CLI not found at ${SYSTEM_BINARIES.shortcuts}`,
+          undefined,
+          { cause: err },
         );
       }
-      // Any other failure (including timeout on unknown mode or general exit) is a mode name mismatch
-      throw ctx.fail('focus_not_found', `Focus mode "${mode}" was not found.`, {
-        recovery: {
-          hint: 'Check System Settings > Focus for configured profile names. Names are case-sensitive.',
-        },
-      });
+      if (typeof e.stderr === 'string' && e.stderr.includes(NO_SUCH_SHORTCUT)) {
+        throw ctx.fail(
+          'shortcuts_unavailable',
+          `The Shortcuts library has no shortcut named "${SET_FOCUS_SHORTCUT}".`,
+          undefined,
+          { cause: err },
+        );
+      }
+      if (e.killed) {
+        throw timeout(
+          `The "${SET_FOCUS_SHORTCUT}" shortcut did not finish within ${SET_TIMEOUT_MS}ms and was stopped; check that it does not wait for a prompt or for input.`,
+          { timeoutMs: SET_TIMEOUT_MS },
+          { cause: err },
+        );
+      }
+      throw ctx.fail(
+        'shortcut_failed',
+        `The "${SET_FOCUS_SHORTCUT}" shortcut failed: ${execFailureDetail(err)}`,
+        undefined,
+        { cause: err },
+      );
     }
 
     ctx.log.info('macos_manage_focus set', { mode, enabled });
-    return { action: 'set', success: true, mode };
+    return { action: 'set', success: true, mode, enabled };
   },
 
   format: (result) => {
     const lines: string[] = [`**action:** ${result.action}`];
     if (result.status !== undefined) lines.push(`**status:** ${result.status}`);
-    if (result.mode !== undefined) lines.push(`**mode:** ${result.mode ?? '(none)'}`);
+    // A mode is the Focus state file's identifier or the caller's own text, so it renders as a literal.
+    if (result.mode !== undefined) {
+      lines.push(`**mode:** ${result.mode === null ? '(none)' : markdownLiteral(result.mode)}`);
+    }
+    // The reason is this server's own fixed sentence, which carries no markup.
     if (result.reason !== undefined) lines.push(`**reason:** ${result.reason}`);
+    if (result.enabled !== undefined) lines.push(`**enabled:** ${result.enabled}`);
     if (result.success !== undefined) lines.push(`**success:** ${result.success}`);
     return [{ type: 'text', text: lines.join('\n') }];
   },
