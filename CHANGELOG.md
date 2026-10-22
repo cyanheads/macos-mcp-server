@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-10-21 · ⚠️ Breaking · 🛡️ Security
+
+State reads report what the probe saw: failed probes return null instead of invented values, permission checks never prompt, and window, app, and display targets are matched exactly. Screenshot paths are bounded and never replace an existing file unless overwrite is set.
+
 ## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-10-08
 
 Adopts mcp-ts-core 0.13.14: tool error results carry a request ID, a number or boolean sent as a string and a null optional argument are repaired before validation, client log notifications honor MCP_LOG_LEVEL, and the registry HTTP entry starts the HTTP transport. Tool schemas are unchanged.

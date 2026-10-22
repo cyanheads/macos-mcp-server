@@ -1,6 +1,6 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-10-09 06:49:10
+Generated on: 2026-10-22 00:53:13
 
 ```text
 macos-mcp-server/
@@ -26,6 +26,7 @@ macos-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -163,44 +164,67 @@ macos-mcp-server/
 │   ├── services/
 │   │   ├── audio/
 │   │   │   └── audio-service.ts
+│   │   ├── binaries/
+│   │   │   └── binary-paths.ts
 │   │   ├── display/
 │   │   │   └── display-service.ts
 │   │   ├── osascript/
+│   │   │   ├── applescript-literal.ts
+│   │   │   ├── foreground-processes.ts
+│   │   │   ├── osascript-exclusion.ts
 │   │   │   ├── osascript-service.ts
-│   │   │   └── permission-denial.ts
+│   │   │   ├── permission-denial.ts
+│   │   │   └── resolve-app-pids.ts
+│   │   ├── permissions/
+│   │   │   └── permission-probes.ts
 │   │   ├── screencapture/
 │   │   │   └── screencapture-service.ts
 │   │   └── system-info/
 │   │       └── system-info-service.ts
 │   ├── utils/
-│   │   └── exec-failure.ts
+│   │   ├── exec-failure.ts
+│   │   ├── markdown-literal.ts
+│   │   ├── parse-json-output.ts
+│   │   └── quoted-text.ts
 │   └── index.ts
 ├── tests/
+│   ├── helpers/
+│   │   └── commonmark.ts
+│   ├── resources/
+│   │   └── macos-displays.resource.test.ts
 │   ├── security/
 │   │   └── injection.test.ts
 │   ├── services/
+│   │   ├── applescript-literal.test.ts
 │   │   ├── audio-service.test.ts
+│   │   ├── binary-paths.test.ts
 │   │   ├── display-service.test.ts
+│   │   ├── osascript-exclusion.test.ts
 │   │   ├── osascript-service.test.ts
+│   │   ├── permission-probes.test.ts
+│   │   ├── resolve-app-pids.test.ts
 │   │   ├── screencapture-service.test.ts
 │   │   └── system-info-service.test.ts
-│   └── tools/
-│       ├── action-requirements.test.ts
-│       ├── error-contract-recovery.test.ts
-│       ├── macos-check-permissions.tool.test.ts
-│       ├── macos-control-appearance.tool.test.ts
-│       ├── macos-control-audio.tool.test.ts
-│       ├── macos-control-system.tool.test.ts
-│       ├── macos-control-volume.tool.test.ts
-│       ├── macos-get-info.tool.test.ts
-│       ├── macos-manage-apps.tool.test.ts
-│       ├── macos-manage-displays.tool.test.ts
-│       ├── macos-manage-finder.tool.test.ts
-│       ├── macos-manage-focus.tool.test.ts
-│       ├── macos-manage-windows.tool.test.ts
-│       ├── macos-send-notification.tool.test.ts
-│       ├── macos-take-screenshot.tool.test.ts
-│       └── missing-arguments.test.ts
+│   ├── tools/
+│   │   ├── action-requirements.test.ts
+│   │   ├── error-contract-recovery.test.ts
+│   │   ├── macos-check-permissions.tool.test.ts
+│   │   ├── macos-control-appearance.tool.test.ts
+│   │   ├── macos-control-audio.tool.test.ts
+│   │   ├── macos-control-system.tool.test.ts
+│   │   ├── macos-control-volume.tool.test.ts
+│   │   ├── macos-get-info.tool.test.ts
+│   │   ├── macos-manage-apps.tool.test.ts
+│   │   ├── macos-manage-displays.tool.test.ts
+│   │   ├── macos-manage-finder.tool.test.ts
+│   │   ├── macos-manage-focus.tool.test.ts
+│   │   ├── macos-manage-windows.tool.test.ts
+│   │   ├── macos-send-notification.tool.test.ts
+│   │   ├── macos-take-screenshot.tool.test.ts
+│   │   └── missing-arguments.test.ts
+│   └── utils/
+│       ├── markdown-literal.test.ts
+│       └── parse-json-output.test.ts
 ├── .env.example
 ├── .gitattributes
 ├── .gitignore
