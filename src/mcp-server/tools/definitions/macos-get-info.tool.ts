@@ -4,42 +4,41 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { getSystemInfoService } from '@/services/system-info/system-info-service.js';
+import {
+  getSystemInfoService,
+  type SystemInfo,
+  SystemInfoSchema,
+} from '@/services/system-info/system-info-service.js';
+import { markdownLiteral } from '@/utils/markdown-literal.js';
+
+const PROBE_FAILED = 'unavailable (probe failed)';
+
+function wifiLine({ wifi, unavailable }: SystemInfo): string {
+  if (!wifi) return PROBE_FAILED;
+  if (!wifi.connected) return 'Not connected';
+  // A literal, so markdown in the network name reads back as the name itself.
+  if (wifi.ssid !== null) return `Connected to ${markdownLiteral(wifi.ssid)}`;
+  return unavailable.includes('wifi.ssid')
+    ? 'Connected (network name unavailable: probe failed)'
+    : 'Connected (network name withheld by macOS; reading it requires Location Services access for the host app)';
+}
 
 export const macosGetInfo = tool('macos_get_info', {
   title: 'Get macOS System Info',
   description:
-    'Returns a snapshot of the current macOS system state: battery level and charging status, power source (AC/Battery), Wi-Fi SSID, hostname, macOS version, uptime in seconds, and connected display count. All fields reflect live system state at the time of the call.',
+    'Returns a snapshot of the current macOS system state: battery level, charging state, and power source (AC/Battery/UPS), Wi-Fi association and network name, hostname, macOS version, uptime in seconds, and connected display count. All fields reflect live system state at the time of the call. A field whose probe fails is null and named in `unavailable`, never filled with a guess. macOS withholds the Wi-Fi network name from an app without Location Services access; a connected Mac then reports `connected: true` with `ssid: null`.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({}),
-  output: z.object({
-    battery: z
-      .object({
-        level: z.number().describe('Battery charge level as a percentage (0–100).'),
-        charging: z.boolean().describe('True when the battery is currently charging.'),
-        power_source: z.enum(['AC', 'Battery', 'UPS']).describe('Current power source.'),
-      })
-      .nullable()
-      .describe('Battery info, or null on desktops with no battery.'),
-    wifi: z
-      .object({
-        ssid: z
-          .string()
-          .nullable()
-          .describe('Connected Wi-Fi network name, or null when disconnected.'),
-        connected: z.boolean().describe('True when connected to a Wi-Fi network.'),
-      })
-      .describe('Wi-Fi connection status.'),
-    hostname: z.string().describe('Machine hostname.'),
-    macos_version: z.string().describe('macOS product version string, e.g. "15.1.0".'),
-    uptime_seconds: z.number().describe('Seconds since last boot.'),
-    display_count: z.number().describe('Number of currently connected displays.'),
-  }),
+  output: SystemInfoSchema,
 
   async handler(_input, ctx) {
     const svc = getSystemInfoService();
     const info = await svc.getSystemInfo(ctx);
-    ctx.log.info('macos_get_info', { version: info.macos_version, uptime: info.uptime_seconds });
+    ctx.log.info('macos_get_info', {
+      version: info.macos_version,
+      uptime: info.uptime_seconds,
+      unavailable: info.unavailable,
+    });
     return info;
   },
 
@@ -47,12 +46,12 @@ export const macosGetInfo = tool('macos_get_info', {
     const lines: string[] = [];
 
     lines.push('## macOS System Info');
-    lines.push(`**Hostname:** ${result.hostname}`);
-    lines.push(`**macOS Version:** ${result.macos_version}`);
+    lines.push(`**Hostname:** ${markdownLiteral(result.hostname)}`);
+    lines.push(`**macOS Version:** ${result.macos_version ?? PROBE_FAILED}`);
     lines.push(
       `**Uptime:** ${Math.floor(result.uptime_seconds / 3600)}h ${Math.floor((result.uptime_seconds % 3600) / 60)}m (${result.uptime_seconds}s)`,
     );
-    lines.push(`**Displays:** ${result.display_count}`);
+    lines.push(`**Displays:** ${result.display_count ?? PROBE_FAILED}`);
 
     lines.push('');
     lines.push('### Power');
@@ -70,18 +69,21 @@ export const macosGetInfo = tool('macos_get_info', {
           : 'not charging';
       lines.push(`**Battery:** ${result.battery.level}% — ${state}`);
       lines.push(`**Power Source:** ${result.battery.power_source}`);
+    } else if (result.unavailable.includes('battery')) {
+      lines.push(`**Battery:** ${PROBE_FAILED}`);
     } else {
-      lines.push('**Battery:** Not available (desktop or no battery)');
-      lines.push('**Power Source:** AC');
+      lines.push('**Battery:** None (this Mac reports no battery)');
     }
 
     lines.push('');
     lines.push('### Network');
-    if (result.wifi.connected && result.wifi.ssid) {
-      lines.push(`**Wi-Fi:** Connected to "${result.wifi.ssid}"`);
-    } else {
-      lines.push('**Wi-Fi:** Not connected');
-    }
+    lines.push(`**Wi-Fi:** ${wifiLine(result)}`);
+
+    // Field paths this server names, which carry no markup.
+    lines.push('');
+    lines.push(
+      `**Unavailable:** ${result.unavailable.length > 0 ? result.unavailable.join(', ') : '[]'}`,
+    );
 
     return [{ type: 'text', text: lines.join('\n') }];
   },
