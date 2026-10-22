@@ -7,11 +7,16 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { internalError, JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
+import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
+import { appleScriptLiteral } from '@/services/osascript/applescript-literal.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 import { isPermissionDenial } from '@/services/osascript/permission-denial.js';
 import { execFailure, execFailureDetail } from '@/utils/exec-failure.js';
+import { markdownLiteral } from '@/utils/markdown-literal.js';
+import { parseJsonOutput } from '@/utils/parse-json-output.js';
+import { quotedText } from '@/utils/quoted-text.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -24,6 +29,24 @@ function pathExists(path: string): Promise<boolean> {
   return lstat(path).then(
     () => true,
     (err: NodeJS.ErrnoException) => err.code !== 'ENOENT' && err.code !== 'ENOTDIR',
+  );
+}
+
+/** What the selection script prints: each selected item's POSIX path, or its name when it has no file URL. */
+const SelectionSchema = z.array(z.string());
+
+/** The line osascript prints for a script it could not compile: `<start>:<end>: syntax error: …`. */
+const COMPILE_FAILURE_LINE = /^\d+:\d+: syntax error: /;
+
+/**
+ * True when osascript rejected the script before running it — a fault in the
+ * script this tool built, never Finder refusing the item. Read from the stderr
+ * of the osascript rejection the service keeps as the error's `cause`.
+ */
+function isCompileFailure(err: McpError): boolean {
+  const { stderr } = (err.cause ?? {}) as { stderr?: unknown };
+  return (
+    typeof stderr === 'string' && stderr.split('\n').some((line) => COMPILE_FAILURE_LINE.test(line))
   );
 }
 
@@ -129,8 +152,8 @@ export const macosManageFinder = tool('macos_manage_finder', {
           const path = stdout.trim() || null;
           return { action: 'frontmost_path', path };
         } catch (err: unknown) {
-          const e = err as { message?: string };
-          const msg = e.message ?? '';
+          if (ctx.signal.aborted) throw err;
+          const msg = (err as { message?: string }).message ?? '';
           if (
             msg.includes('Invalid index') ||
             msg.includes('no front window') ||
@@ -143,8 +166,8 @@ export const macosManageFinder = tool('macos_manage_finder', {
       }
 
       case 'get_selection': {
-        try {
-          const { stdout } = await osascript.runJxa(
+        const { stdout } = await osascript
+          .runJxa(
             `
               const finder = Application("Finder");
               const sel = finder.selection();
@@ -155,33 +178,43 @@ export const macosManageFinder = tool('macos_manage_finder', {
             `,
             ctx,
             { timeoutMs: 5_000 },
-          );
-          const paths: string[] = JSON.parse(stdout || '[]');
-          return { action: 'get_selection', paths, count: paths.length };
-        } catch (err: unknown) {
-          if (isPermissionDenial(err)) throw err;
-          const msg = (err as { message?: string }).message ?? '';
-          if (msg.includes('Invalid index') || msg.includes('no front window')) {
-            throw ctx.fail('finder_not_open', 'No Finder window is open');
-          }
-          throw err;
+          )
+          .catch((err: unknown) => {
+            if (ctx.signal.aborted) throw err;
+            if (isPermissionDenial(err)) throw err;
+            const msg = (err as { message?: string }).message ?? '';
+            if (msg.includes('Invalid index') || msg.includes('no front window')) {
+              throw ctx.fail('finder_not_open', 'No Finder window is open');
+            }
+            throw err;
+          });
+        const paths = parseJsonOutput(SelectionSchema, stdout);
+        if (!paths) {
+          throw internalError('The Finder selection script printed output in an unexpected shape.');
         }
+        return { action: 'get_selection', paths, count: paths.length };
       }
 
       case 'reveal': {
         const path = suppliedArg(input.path, 'path');
         if (!path.startsWith('/'))
-          throw ctx.fail('path_not_found', `Path "${path}" must be absolute`);
+          throw ctx.fail('path_not_found', `Path ${quotedText(path)} must be absolute`);
+        // Before the spawn too: Bun can still run a child whose signal already fired.
+        ctx.signal.throwIfAborted();
         try {
-          await execFile('open', ['-R', path], { timeout: 10_000 });
+          await execFile(SYSTEM_BINARIES.open, ['-R', path], {
+            timeout: 10_000,
+            signal: ctx.signal,
+          });
         } catch (err: unknown) {
+          if (ctx.signal.aborted) throw err;
           const msg = execFailureDetail(err).toLowerCase();
           if (
             msg.includes('no such file') ||
             msg.includes('does not exist') ||
             msg.includes('unable to find')
           ) {
-            throw ctx.fail('path_not_found', `Path "${path}" does not exist.`);
+            throw ctx.fail('path_not_found', `Path ${quotedText(path)} does not exist.`);
           }
           throw execFailure('open', err);
         }
@@ -191,21 +224,26 @@ export const macosManageFinder = tool('macos_manage_finder', {
       case 'open_with': {
         const path = suppliedArg(input.path, 'path');
         if (!path.startsWith('/'))
-          throw ctx.fail('path_not_found', `Path "${path}" must be absolute`);
+          throw ctx.fail('path_not_found', `Path ${quotedText(path)} must be absolute`);
         if (!(await pathExists(path)))
-          throw ctx.fail('path_not_found', `Path "${path}" does not exist.`);
+          throw ctx.fail('path_not_found', `Path ${quotedText(path)} does not exist.`);
         const openArgs: string[] = [];
         if (input.app_name) openArgs.push('-a', input.app_name);
         openArgs.push(path);
+        ctx.signal.throwIfAborted();
         try {
-          await execFile('open', openArgs, { timeout: 10_000 });
+          await execFile(SYSTEM_BINARIES.open, openArgs, { timeout: 10_000, signal: ctx.signal });
         } catch (err: unknown) {
+          if (ctx.signal.aborted) throw err;
           const msg = execFailureDetail(err).toLowerCase();
-          if (msg.includes('unable to find application')) {
-            throw ctx.fail('app_not_found', `No application named "${input.app_name}" was found.`);
+          if (input.app_name && msg.includes('unable to find application')) {
+            throw ctx.fail(
+              'app_not_found',
+              `No application named ${quotedText(input.app_name)} was found.`,
+            );
           }
           if (msg.includes('does not exist')) {
-            throw ctx.fail('path_not_found', `Path "${path}" does not exist.`);
+            throw ctx.fail('path_not_found', `Path ${quotedText(path)} does not exist.`);
           }
           throw execFailure('open', err);
         }
@@ -214,22 +252,22 @@ export const macosManageFinder = tool('macos_manage_finder', {
 
       case 'trash': {
         const path = suppliedArg(input.path, 'path');
+        // Built first, so a path no literal can carry fails as invalid input before any lookup.
+        const script = `tell application "Finder" to delete POSIX file ${appleScriptLiteral(path, 'path')}`;
         if (!path.startsWith('/'))
-          throw ctx.fail('path_not_found', `Path "${path}" must be absolute`);
+          throw ctx.fail('path_not_found', `Path ${quotedText(path)} must be absolute`);
         if (!(await pathExists(path)))
-          throw ctx.fail('path_not_found', `Path "${path}" does not exist.`);
+          throw ctx.fail('path_not_found', `Path ${quotedText(path)} does not exist.`);
         try {
-          await osascript.runAppleScript(
-            `tell application "Finder" to delete POSIX file ${JSON.stringify(path)}`,
-            ctx,
-            { timeoutMs: 10_000 },
-          );
+          await osascript.runAppleScript(script, ctx, { timeoutMs: 10_000 });
         } catch (err: unknown) {
-          // A permission denial or a timeout keeps its own classification.
+          if (ctx.signal.aborted) throw err;
+          // A permission denial, a timeout, and a script that never compiled keep their own classification.
           if (!(err instanceof McpError) || err.code !== JsonRpcErrorCode.InternalError) throw err;
+          if (isCompileFailure(err)) throw err;
           throw ctx.fail(
             'trash_refused',
-            `Finder did not move "${path}" to the Trash: ${err.message.replace(/^osascript failed: /, '')}`,
+            `Finder did not move ${quotedText(path)} to the Trash: ${err.message.replace(/^osascript failed: /, '')}`,
             undefined,
             { cause: err },
           );
@@ -241,11 +279,14 @@ export const macosManageFinder = tool('macos_manage_finder', {
 
   format: (result) => {
     const lines: string[] = [`**action:** ${result.action}`];
-    if (result.path !== undefined) lines.push(`**path:** ${result.path ?? '(none)'}`);
+    // A path carries whatever its file names do, markdown included, so paths render as literals.
+    if (result.path !== undefined) {
+      lines.push(`**path:** ${result.path === null ? '(none)' : markdownLiteral(result.path)}`);
+    }
     // Selection fields
     if (result.paths !== undefined) {
       lines.push(`**count:** ${result.count ?? result.paths.length}`);
-      for (const p of result.paths) lines.push(`- ${p}`);
+      for (const p of result.paths) lines.push(`- ${markdownLiteral(p)}`);
       if (result.paths.length === 0) lines.push('_(nothing selected)_');
     }
     if (result.success !== undefined) lines.push(`**success:** ${result.success}`);

@@ -1,112 +1,90 @@
 /**
- * @fileoverview Permission check tool — reports Accessibility, Screen Recording, Automation, and Notification status.
+ * @fileoverview Permission check tool — reports Accessibility, Screen Recording, Automation > Finder, and Notification status from Apple's prompt-free checks.
  * @module mcp-server/tools/definitions/macos-check-permissions
  */
 
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
+import {
+  checkAccessibility,
+  checkAutomationFinder,
+  checkScreenRecording,
+  type PermissionCheck,
+} from '@/services/permissions/permission-probes.js';
+import { markdownLiteral } from '@/utils/markdown-literal.js';
 
 const execFile = promisify(execFileCallback);
 
-async function checkAccessibility(): Promise<boolean> {
-  try {
-    // Attempt to list processes via System Events — fails with permission error if denied
-    await execFile(
-      'osascript',
-      [
-        '-l',
-        'JavaScript',
-        '-e',
-        'Application("System Events").processes.whose({backgroundOnly: false}).name()',
-      ],
-      { timeout: 5_000 },
-    );
-    return true;
-  } catch (err: unknown) {
-    const e = err as { stderr?: string; message?: string };
-    const msg = e.stderr ?? e.message ?? '';
-    if (
-      msg.includes('not allowed assistive access') ||
-      msg.includes('-25211') ||
-      msg.includes('-25212') ||
-      msg.includes('Assistive access')
-    ) {
-      return false;
-    }
-    // Non-permission error — still accessible, just another issue
-    return true;
-  }
-}
+/** Why `notifications` is always null. */
+const NOTIFICATIONS_UNKNOWN =
+  'macOS offers no prompt-free check for notification permission; System Settings > Notifications shows which apps may post';
 
-async function checkScreenRecording(): Promise<boolean> {
+/** The parent process's name, or `unknown` when ps cannot tell; the caller's cancellation is rethrown. */
+async function getCallingProcess(signal: AbortSignal): Promise<string> {
   try {
-    // Use screencapture -x to /dev/null — non-zero exit with stderr about permissions when denied
-    const result = await execFile('screencapture', ['-x', '-t', 'png', '/dev/null'], {
-      timeout: 5_000,
-    });
-    // stderr mentions permissions if denied even on exit 0 (macOS 13+)
-    const stderr = result.stderr ?? '';
-    if (stderr.includes('permission') || stderr.includes('not granted')) return false;
-    return true;
-  } catch (err: unknown) {
-    const e = err as { stderr?: string; message?: string };
-    const msg = e.stderr ?? e.message ?? '';
-    if (msg.includes('permission') || msg.includes('not granted')) return false;
-    // Other failures don't indicate permission denial
-    return true;
-  }
-}
-
-async function checkAutomationFinder(): Promise<boolean> {
-  try {
-    await execFile('osascript', ['-e', 'tell application "Finder" to get name of desktop'], {
-      timeout: 5_000,
-    });
-    return true;
-  } catch (err: unknown) {
-    const e = err as { stderr?: string; message?: string };
-    const msg = e.stderr ?? e.message ?? '';
-    if (
-      msg.includes('not allowed to send Apple events') ||
-      msg.includes('is not allowed') ||
-      msg.includes('-1719') ||
-      msg.includes('Not authorized')
-    ) {
-      return false;
-    }
-    return true;
-  }
-}
-
-function checkNotifications(): boolean {
-  // Notifications from osascript always work — macOS doesn't gate display notification
-  return true;
-}
-
-async function getCallingProcess(): Promise<string> {
-  try {
-    const result = await execFile('ps', ['-o', 'comm=', '-p', String(process.ppid)], {
+    const result = await execFile(SYSTEM_BINARIES.ps, ['-o', 'comm=', '-p', String(process.ppid)], {
       timeout: 3_000,
+      signal,
     });
     const comm = (result.stdout ?? '').trim();
     return comm.split('/').pop() ?? (comm || 'unknown');
-  } catch {
+  } catch (err: unknown) {
+    if (signal.aborted) throw err;
     return 'unknown';
   }
 }
 
+/** A check's field value: true granted, false not granted, null unknown. */
+const fieldValue = (check: PermissionCheck): boolean | null =>
+  check.status === 'unknown' ? null : check.status === 'granted';
+
+/** The check's reason under `key` when it is unknown, nothing otherwise. */
+const reasonEntry = <K extends string>(key: K, check: PermissionCheck) =>
+  check.status === 'unknown' ? ({ [key]: check.reason } as Record<K, string>) : {};
+
 export const macosCheckPermissions = tool('macos_check_permissions', {
   title: 'Check macOS Permissions',
   description:
-    'Reports which macOS permissions relevant to this server are currently granted for the calling process: Accessibility (required for window manipulation, app hide/show), Screen Recording (required for window screenshots), Automation > Finder (required for Finder selection), and Notifications. Use this tool before attempting operations that require elevated permissions to confirm prerequisites without triggering an OS permission prompt.',
+    "Reports which macOS permissions this server relies on are granted to the calling process, read from Apple's prompt-free checks: Accessibility (every macos_manage_windows action, list included; macos_manage_apps hide and show, and the window_title frontmost reads; the ⌃⌘Q keystroke macos_control_system lock sends before it falls back to the screen saver), Screen Recording (window screenshots), and Automation > Finder (macos_manage_finder frontmost_path, get_selection, and trash). No check sends an Apple event to another app, captures the screen, or can show a permission prompt. Each field is true when granted, false when not, and null when the check cannot tell, with the reason in unknown_reasons: Automation > Finder reads null until macOS has asked for consent and while Finder is not running. Notifications is always null, since macOS offers no prompt-free check for it. Call this before operations that need these permissions.",
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({}),
   output: z.object({
-    accessibility: z.boolean().describe('True when Accessibility permission is granted.'),
-    screen_recording: z.boolean().describe('True when Screen Recording permission is granted.'),
-    automation_finder: z.boolean().describe('True when Automation > Finder permission is granted.'),
-    notifications: z.boolean().describe('True when notifications can be posted via osascript.'),
+    accessibility: z
+      .boolean()
+      .nullable()
+      .describe(
+        'True when Accessibility is granted, false when it is not (denied or never asked), null when the check could not run (see unknown_reasons.accessibility).',
+      ),
+    screen_recording: z
+      .boolean()
+      .nullable()
+      .describe(
+        'True when Screen Recording is granted, false when it is not (denied or never asked), null when the check could not run (see unknown_reasons.screen_recording).',
+      ),
+    automation_finder: z
+      .boolean()
+      .nullable()
+      .describe(
+        'True when Automation > Finder is granted, false when it was denied, null when macOS has not asked yet, Finder is not running, or the check could not run (see unknown_reasons.automation_finder).',
+      ),
+    notifications: z
+      .boolean()
+      .nullable()
+      .describe(
+        'Always null: macOS offers no prompt-free check for notification permission (see unknown_reasons.notifications).',
+      ),
+    unknown_reasons: z
+      .object({
+        accessibility: z.string().optional().describe('Why accessibility is null.'),
+        screen_recording: z.string().optional().describe('Why screen_recording is null.'),
+        automation_finder: z.string().optional().describe('Why automation_finder is null.'),
+        notifications: z.string().optional().describe('Why notifications is null.'),
+      })
+      .describe(
+        'Why each null permission field is unknown, keyed by field name. A key is present exactly when its field is null.',
+      ),
     calling_process: z
       .string()
       .describe('Name of the process that launched this server (e.g. "ghostty", "node").'),
@@ -114,28 +92,45 @@ export const macosCheckPermissions = tool('macos_check_permissions', {
 
   async handler(_input, ctx) {
     ctx.log.info('macos_check_permissions');
-    const [accessibility, screen_recording, automation_finder, notifications, calling_process] =
-      await Promise.all([
-        checkAccessibility(),
-        checkScreenRecording(),
-        checkAutomationFinder(),
-        checkNotifications(),
-        getCallingProcess(),
-      ]);
+    const [accessibility, screen_recording, automation_finder, calling_process] = await Promise.all(
+      [
+        checkAccessibility(ctx),
+        checkScreenRecording(ctx),
+        checkAutomationFinder(ctx),
+        getCallingProcess(ctx.signal),
+      ],
+    );
 
-    return { accessibility, screen_recording, automation_finder, notifications, calling_process };
+    return {
+      accessibility: fieldValue(accessibility),
+      screen_recording: fieldValue(screen_recording),
+      automation_finder: fieldValue(automation_finder),
+      notifications: null,
+      unknown_reasons: {
+        ...reasonEntry('accessibility', accessibility),
+        ...reasonEntry('screen_recording', screen_recording),
+        ...reasonEntry('automation_finder', automation_finder),
+        notifications: NOTIFICATIONS_UNKNOWN,
+      },
+      calling_process,
+    };
   },
 
   format: (result) => {
-    const check = (v: boolean) => (v ? '✓ Granted' : '✗ Denied');
+    const reasons = result.unknown_reasons;
+    // A reason can carry osascript's error text, and the process name is whatever ps reports.
+    const show = (value: boolean | null, reason: string | undefined) => {
+      const state = value === null ? 'Unknown' : value ? '✓ Granted' : '✗ Not granted';
+      return reason === undefined ? state : `${state} — ${markdownLiteral(reason)}`;
+    };
     const lines = [
       '## macOS Permission Status',
-      `**Calling Process:** ${result.calling_process}`,
+      `**Calling Process:** ${markdownLiteral(result.calling_process)}`,
       '',
-      `**Accessibility:** ${check(result.accessibility)}`,
-      `**Screen Recording:** ${check(result.screen_recording)}`,
-      `**Automation > Finder:** ${check(result.automation_finder)}`,
-      `**Notifications:** ${check(result.notifications)}`,
+      `**Accessibility:** ${show(result.accessibility, reasons.accessibility)}`,
+      `**Screen Recording:** ${show(result.screen_recording, reasons.screen_recording)}`,
+      `**Automation > Finder:** ${show(result.automation_finder, reasons.automation_finder)}`,
+      `**Notifications:** ${show(result.notifications, reasons.notifications)}`,
       '',
       '> To grant missing permissions: System Settings > Privacy & Security > [permission type]',
     ];

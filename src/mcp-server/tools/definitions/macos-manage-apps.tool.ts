@@ -5,51 +5,55 @@
 
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
-import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
+import { internalError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
-import { getOsascriptService } from '@/services/osascript/osascript-service.js';
+import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
+import { appleScriptLiteral } from '@/services/osascript/applescript-literal.js';
+import { FOREGROUND_PROCESSES_JXA } from '@/services/osascript/foreground-processes.js';
+import {
+  getOsascriptService,
+  type OsascriptService,
+} from '@/services/osascript/osascript-service.js';
 import { execFailure, execFailureDetail } from '@/utils/exec-failure.js';
+import { markdownLiteral } from '@/utils/markdown-literal.js';
+import { parseJsonOutput } from '@/utils/parse-json-output.js';
+import { quotedText } from '@/utils/quoted-text.js';
 
 const execFile = promisify(execFileCallback);
 
-type Osascript = ReturnType<typeof getOsascriptService>;
-type RunContext = Parameters<Osascript['runAppleScript']>[1];
-
 /**
- * The running check quit, force_quit, hide, and show share. `application "X"
- * is running` resolves the name the way `tell application` does, so an app
- * whose process carries a different name ("Visual Studio Code" runs as "Code")
- * is found, and it reads the state without launching the app.
+ * The running check quit, force_quit, hide, and show share, for the app whose
+ * name is the AppleScript literal `app`. `application "X" is running` resolves
+ * the name the way `tell application` does, so an app whose process carries a
+ * different name ("Visual Studio Code" runs as "Code") is found, and it reads
+ * the state without launching the app.
  */
-async function isAppRunning(osascript: Osascript, name: string, ctx: RunContext) {
-  const { stdout } = await osascript.runAppleScript(
-    `application ${JSON.stringify(name)} is running`,
-    ctx,
-  );
+async function isAppRunning(osascript: OsascriptService, app: string, ctx: Context) {
+  const { stdout } = await osascript.runAppleScript(`application ${app} is running`, ctx);
   return stdout === 'true';
 }
 
 /**
- * The PID of a running app, for the actions that act on its process. The same
- * running check gates it; the process is then found through System Events by
- * the app's bundle identifier, falling back to its name. Undefined when the app
- * is not running.
+ * The PID of a running app, for the actions that act on its process; `app` is
+ * the app's name as an AppleScript literal. The same running check gates it;
+ * the process is then found through System Events by the app's bundle
+ * identifier, falling back to its name. Undefined when the app is not running.
  */
-async function runningAppPid(osascript: Osascript, name: string, ctx: RunContext) {
-  const app = `application ${JSON.stringify(name)}`;
+async function runningAppPid(osascript: OsascriptService, app: string, ctx: Context) {
   const { stdout } = await osascript.runAppleScript(
     [
-      `if not (${app} is running) then return ""`,
-      `set bid to id of ${app}`,
+      `if not (application ${app} is running) then return ""`,
+      `set bid to id of application ${app}`,
       'tell application "System Events"',
       '  set pids to unix id of every process whose bundle identifier is bid',
-      `  if pids is {} then set pids to unix id of every process whose name is ${JSON.stringify(name)}`,
+      `  if pids is {} then set pids to unix id of every process whose name is ${app}`,
       'end tell',
       'if pids is {} then return ""',
       'return item 1 of pids',
     ].join('\n'),
     ctx,
+    { exclusion: 'process-enumeration' },
   );
   const pid = Number.parseInt(stdout, 10);
   return Number.isNaN(pid) ? undefined : pid;
@@ -69,6 +73,27 @@ const AppInfoSchema = z
   .describe('Running application with its process details.');
 
 type AppInfo = z.infer<typeof AppInfoSchema>;
+
+/** What the list script prints: one entry per System Events process that is not background-only. */
+const ListedAppsSchema = z.array(
+  z.object({
+    name: z.string(),
+    bundleId: z.string().nullable(),
+    pid: z.number().int(),
+    visible: z.boolean(),
+    frontmost: z.boolean(),
+  }),
+);
+
+/** What the frontmost script prints: the frontmost System Events process, or null when none is. */
+const FrontmostProcessSchema = z
+  .object({
+    name: z.string(),
+    bundleId: z.string().nullable(),
+    pid: z.number().int(),
+    windowTitle: z.string().nullable(),
+  })
+  .nullable();
 
 export const macosManageApps = tool('macos_manage_apps', {
   title: 'Manage macOS Apps',
@@ -175,25 +200,25 @@ export const macosManageApps = tool('macos_manage_apps', {
       case 'list': {
         const { stdout } = await osascript.runJxa(
           `
-            const se = Application("System Events");
-            const procs = se.processes.whose({backgroundOnly: false})();
-            JSON.stringify(procs.map(p => ({
-              name: p.name(),
-              bundleId: p.bundleIdentifier ? p.bundleIdentifier() : null,
-              pid: p.unixId(),
-              visible: p.visible(),
-              frontmost: p.frontmost()
+            ${FOREGROUND_PROCESSES_JXA}
+            const procs = foregroundProcesses(Application("System Events"));
+            JSON.stringify(procs.map(({pid, name, proc}) => ({
+              name,
+              bundleId: proc.bundleIdentifier ? proc.bundleIdentifier() : null,
+              pid,
+              visible: proc.visible(),
+              frontmost: proc.frontmost()
             })));
           `,
           ctx,
+          { exclusion: 'process-enumeration' },
         );
-        const raw: Array<{
-          name: string;
-          bundleId: string | null;
-          pid: number;
-          visible: boolean;
-          frontmost: boolean;
-        }> = JSON.parse(stdout || '[]');
+        const raw = parseJsonOutput(ListedAppsSchema, stdout);
+        if (!raw) {
+          throw internalError(
+            'The running-application script printed output in an unexpected shape.',
+          );
+        }
         const apps: AppInfo[] = raw.map((a) => ({
           name: a.name,
           bundle_id: a.bundleId,
@@ -206,48 +231,45 @@ export const macosManageApps = tool('macos_manage_apps', {
       }
 
       case 'frontmost': {
-        const noFrontmost = () => ctx.fail('no_frontmost_app', 'No frontmost application found');
-        // The script prints null when no process is frontmost rather than indexing
-        // an empty result, which fails as "Invalid index (-1719)".
-        const { stdout } = await osascript
-          .runJxa(
-            `
-            const procs = Application("System Events").processes.whose({frontmost: true})();
+        /**
+         * The script prints null when no process is frontmost. Any failure —
+         * "Invalid index" (-1719) included, which the frontmost process quitting
+         * mid-read raises — keeps the classification the service gave it. The
+         * process is addressed by its unix id, and its frontmost window's title
+         * read under it: System Events returns processes and windows as by-name
+         * specifiers, which reach the first process of that name.
+         */
+        const { stdout } = await osascript.runJxa(
+          `
+            const se = Application("System Events");
+            const pids = se.processes.whose({frontmost: true}).unixId();
             let found = null;
-            if (procs.length > 0) {
-              const proc = procs[0];
+            if (pids.length > 0) {
+              const proc = se.processes.whose({unixId: pids[0]})[0];
               let windowTitle = null;
               try {
-                const wins = proc.windows();
-                if (wins.length > 0) windowTitle = wins[0].name();
+                const titles = proc.windows.name();
+                if (titles.length > 0) windowTitle = titles[0];
               } catch(e) {}
               found = {
                 name: proc.name(),
                 bundleId: proc.bundleIdentifier ? proc.bundleIdentifier() : null,
-                pid: proc.unixId(),
+                pid: pids[0],
                 windowTitle,
               };
             }
             JSON.stringify(found);
           `,
-            ctx,
-          )
-          .catch((err: unknown) => {
-            if (
-              err instanceof McpError &&
-              err.code === JsonRpcErrorCode.InternalError &&
-              err.message.includes('Invalid index')
-            )
-              throw noFrontmost();
-            throw err;
-          });
-        const raw = JSON.parse(stdout || 'null') as {
-          name: string;
-          bundleId: string | null;
-          pid: number;
-          windowTitle: string | null;
-        } | null;
-        if (!raw) throw noFrontmost();
+          ctx,
+          { exclusion: 'process-enumeration' },
+        );
+        const raw = parseJsonOutput(FrontmostProcessSchema, stdout);
+        if (raw === undefined) {
+          throw internalError(
+            'The frontmost-application script printed output in an unexpected shape.',
+          );
+        }
+        if (raw === null) throw ctx.fail('no_frontmost_app', 'No frontmost application found');
         return {
           action: 'frontmost',
           app: {
@@ -263,9 +285,12 @@ export const macosManageApps = tool('macos_manage_apps', {
         const target = input.bundle_id || suppliedArg(input.app_name, 'app_name');
         const launchArgs = [...(input.hidden ? ['-j'] : []), input.bundle_id ? '-b' : '-a', target];
         const name = input.app_name || target;
+        // Before the spawn too: Bun can still run a child whose signal already fired.
+        ctx.signal.throwIfAborted();
         try {
-          await execFile('open', launchArgs, { timeout: 15_000 });
+          await execFile(SYSTEM_BINARIES.open, launchArgs, { timeout: 15_000, signal: ctx.signal });
         } catch (err: unknown) {
+          if (ctx.signal.aborted) throw err;
           const msg = execFailureDetail(err).toLowerCase();
           if (
             msg.includes('unable to find application') ||
@@ -274,7 +299,7 @@ export const macosManageApps = tool('macos_manage_apps', {
             // `open -b` with an unknown bundle identifier
             msg.includes('determine the application with bundle identifier')
           ) {
-            throw ctx.fail('app_not_found', `Application "${target}" was not found.`);
+            throw ctx.fail('app_not_found', `Application ${quotedText(target)} was not found.`);
           }
           throw execFailure('open', err);
         }
@@ -284,9 +309,10 @@ export const macosManageApps = tool('macos_manage_apps', {
 
       case 'quit': {
         const name = suppliedArg(input.app_name, 'app_name');
-        if (!(await isAppRunning(osascript, name, ctx)))
-          throw ctx.fail('not_running', `"${name}" is not running`);
-        await osascript.runAppleScript(`tell application ${JSON.stringify(name)} to quit`, ctx, {
+        const app = appleScriptLiteral(name, 'app_name');
+        if (!(await isAppRunning(osascript, app, ctx)))
+          throw ctx.fail('not_running', `${quotedText(name)} is not running`);
+        await osascript.runAppleScript(`tell application ${app} to quit`, ctx, {
           timeoutMs: 15_000,
         });
         return { action: 'quit', success: true, app_name: name };
@@ -294,10 +320,15 @@ export const macosManageApps = tool('macos_manage_apps', {
 
       case 'force_quit': {
         const name = suppliedArg(input.app_name, 'app_name');
-        const pid = await runningAppPid(osascript, name, ctx);
-        if (pid === undefined) throw ctx.fail('not_running', `"${name}" is not running`);
-        await execFile('kill', ['-9', String(pid)], { timeout: 5_000 }).catch((err: unknown) => {
-          throw execFailure('kill', err);
+        const pid = await runningAppPid(osascript, appleScriptLiteral(name, 'app_name'), ctx);
+        if (pid === undefined) throw ctx.fail('not_running', `${quotedText(name)} is not running`);
+        // Before the spawn too: Bun can still run a child whose signal already fired.
+        ctx.signal.throwIfAborted();
+        await execFile(SYSTEM_BINARIES.kill, ['-9', String(pid)], {
+          timeout: 5_000,
+          signal: ctx.signal,
+        }).catch((err: unknown) => {
+          throw ctx.signal.aborted ? err : execFailure('kill', err);
         });
         ctx.log.info('macos_manage_apps force_quit', { app: name, pid });
         return { action: 'force_quit', success: true, app_name: name };
@@ -306,16 +337,18 @@ export const macosManageApps = tool('macos_manage_apps', {
       case 'hide':
       case 'show': {
         const name = suppliedArg(input.app_name, 'app_name');
-        const pid = await runningAppPid(osascript, name, ctx);
-        if (pid === undefined) throw ctx.fail('not_running', `"${name}" is not running`);
+        const pid = await runningAppPid(osascript, appleScriptLiteral(name, 'app_name'), ctx);
+        if (pid === undefined) throw ctx.fail('not_running', `${quotedText(name)} is not running`);
         const visible = input.action === 'show';
+        // Addressed by unix id at the write: a resolved process specifier is by name, and a same-named process could take the write.
         await osascript.runJxa(
           [
             'const se = Application("System Events");',
-            `se.processes.whose({unixId: ${pid}})()[0].visible = ${visible};`,
+            `se.processes.whose({unixId: ${pid}})[0].visible = ${visible};`,
             visible ? `Application(${JSON.stringify(name)}).activate();` : '',
           ].join('\n'),
           ctx,
+          { exclusion: 'process-enumeration' },
         );
         return { action: input.action, success: true, app_name: name };
       }
@@ -324,6 +357,8 @@ export const macosManageApps = tool('macos_manage_apps', {
 
   format: (result) => {
     const lines: string[] = [`**action:** ${result.action}`];
+    // Names, bundle identifiers, and titles are text the apps carry, so they render as literals.
+    const bundleId = (id: string | null) => (id === null ? '(none)' : markdownLiteral(id));
     // List fields
     if (result.apps !== undefined) {
       lines.push(`## Running Applications (${result.apps.length})`);
@@ -332,19 +367,21 @@ export const macosManageApps = tool('macos_manage_apps', {
           .filter(Boolean)
           .join(', ');
         lines.push(
-          `- name: ${a.name} pid: ${a.pid} visible: ${a.visible} frontmost: ${a.frontmost}${flags ? ` — ${flags}` : ''}${a.bundle_id ? ` bundle_id: ${a.bundle_id}` : ''}`,
+          `- name: ${markdownLiteral(a.name)} pid: ${a.pid} visible: ${a.visible} frontmost: ${a.frontmost}${flags ? ` — ${flags}` : ''} bundle_id: ${bundleId(a.bundle_id)}`,
         );
       }
     }
     // Frontmost fields
     if (result.app !== undefined) {
       const a = result.app;
-      lines.push(`name: ${a.name} pid: ${a.pid}`);
-      lines.push(`bundle_id: ${a.bundle_id ?? '(none)'}`);
-      lines.push(`window_title: ${a.window_title ?? '(no window)'}`);
+      lines.push(`name: ${markdownLiteral(a.name)} pid: ${a.pid}`);
+      lines.push(`bundle_id: ${bundleId(a.bundle_id)}`);
+      lines.push(
+        `window_title: ${a.window_title === null ? '(no window)' : markdownLiteral(a.window_title)}`,
+      );
     }
     // Write action fields
-    if (result.app_name !== undefined) lines.push(`app_name: ${result.app_name}`);
+    if (result.app_name !== undefined) lines.push(`app_name: ${markdownLiteral(result.app_name)}`);
     if (result.success !== undefined) lines.push(`success: ${result.success}`);
     return [{ type: 'text', text: lines.join('\n') }];
   },

@@ -3,7 +3,7 @@
  * @module tests/tools/macos-send-notification.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/osascript/osascript-service.js', () => ({
@@ -22,68 +22,122 @@ function makeOsascript() {
 }
 
 describe('macosSendNotification', () => {
+  let svc: ReturnType<typeof makeOsascript>;
+
   beforeEach(() => {
-    vi.mocked(getOsascriptService).mockReturnValue(makeOsascript() as never);
+    svc = makeOsascript();
+    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
   });
 
-  it('sends notification with title only', async () => {
-    const svc = makeOsascript();
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
+  it.each([
+    ['title only', { title: 'Test' }, 'display notification "" with title "Test"'],
+    [
+      'a subtitle',
+      { title: 'Hello', subtitle: 'World' },
+      'display notification "" with title "Hello" subtitle "World"',
+    ],
+    [
+      'sound=true',
+      { title: 'Ding', sound: true },
+      'display notification "" with title "Ding" sound name "default"',
+    ],
+    [
+      'quotes in the title, escaped so the text stays inside its literal',
+      { title: '"; do shell script "id"; "' },
+      'display notification "" with title "\\"; do shell script \\"id\\"; \\""',
+    ],
+    [
+      'body, title, subtitle, and sound',
+      { title: 'T', body: 'B \\ "q"', subtitle: 'S', sound: true },
+      'display notification "B \\\\ \\"q\\"" with title "T" subtitle "S" sound name "default"',
+    ],
+    [
+      'a blank subtitle, left out',
+      { title: 'T', subtitle: '' },
+      'display notification "" with title "T"',
+    ],
+  ])('posts one display notification script from %s', async (_label, args, script) => {
     const result = await macosSendNotification.handler(
-      macosSendNotification.input.parse({ title: 'Test' }),
-      ctx,
+      macosSendNotification.input.parse(args),
+      createMockContext(),
     );
-    expect(result.success).toBe(true);
-    expect(svc.runAppleScript).toHaveBeenCalledWith(expect.stringContaining('"Test"'), ctx);
+    expect(result).toEqual({ success: true });
+    expect(svc.runAppleScript.mock.calls.map((c) => c[0])).toEqual([script]);
   });
 
-  it('includes subtitle in AppleScript when provided', async () => {
-    const svc = makeOsascript();
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
-    await macosSendNotification.handler(
-      macosSendNotification.input.parse({ title: 'Hello', subtitle: 'World' }),
-      ctx,
+  describe('text carrying control characters', () => {
+    /** U+0001–U+001F, U+007F, U+0085, U+2028, and U+2029 — tab, LF, and CR among them. */
+    const CONTROLS = String.fromCharCode(
+      ...Array.from({ length: 0x1f }, (_, i) => i + 1),
+      0x7f,
+      0x85,
+      0x2028,
+      0x2029,
     );
-    const script = svc.runAppleScript.mock.calls[0]?.[0] as string;
-    expect(script).toContain('subtitle');
-    expect(script).toContain('"World"');
-  });
 
-  it('includes sound name when sound=true', async () => {
-    const svc = makeOsascript();
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
-    await macosSendNotification.handler(
-      macosSendNotification.input.parse({ title: 'Ding', sound: true }),
-      ctx,
-    );
-    const script = svc.runAppleScript.mock.calls[0]?.[0] as string;
-    expect(script).toContain('sound name');
-  });
+    it('posts the notification with every character raw inside its literal', async () => {
+      const result = await runToolContract(macosSendNotification, {
+        title: `t${CONTROLS}`,
+        body: `b${CONTROLS}`,
+        subtitle: `s${CONTROLS}`,
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({ success: true });
+      expect((result.content as Array<{ text?: string }>).map((b) => b.text)).toEqual([
+        '**Notification success:** true — Posted to Notification Center',
+      ]);
+      expect(svc.runAppleScript.mock.calls.map((c) => c[0])).toEqual([
+        `display notification "b${CONTROLS}" with title "t${CONTROLS}" subtitle "s${CONTROLS}"`,
+      ]);
+    });
 
-  it('uses JSON.stringify for title (injection safety)', async () => {
-    const svc = makeOsascript();
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext();
-    const injectionTitle = '"; do shell script "id"; "';
-    await macosSendNotification.handler(
-      macosSendNotification.input.parse({ title: injectionTitle }),
-      ctx,
-    );
-    const script = svc.runAppleScript.mock.calls[0]?.[0] as string;
-    // The injection content must be JSON-escaped in the script
-    expect(script).toContain(JSON.stringify(injectionTitle));
+    for (const field of ['title', 'body', 'subtitle'] as const) {
+      for (const { label, char, hex, hint } of [
+        {
+          label: 'U+0000',
+          char: String.fromCharCode(0x00),
+          hex: '0000',
+          hint: `Remove U+0000 from ${field} and call again.`,
+        },
+        {
+          label: 'an unpaired surrogate',
+          char: String.fromCharCode(0xdbff),
+          hex: 'DBFF',
+          hint: `Remove the unpaired surrogate from ${field}, or send the whole character it belongs to.`,
+        },
+      ]) {
+        it(`${field} containing ${label} fails as invalid input naming ${field}, running nothing`, async () => {
+          const result = await runToolContract(macosSendNotification, {
+            title: 'T',
+            [field]: `ok${char}`,
+          });
+          const message =
+            hex === '0000'
+              ? `${field} contains U+0000 at UTF-16 offset 2, which osascript cannot pass to AppleScript.`
+              : `${field} contains an unpaired surrogate U+${hex} at UTF-16 offset 2, which AppleScript text cannot represent.`;
+          expect(result.isError).toBe(true);
+          expect(result.structuredContent).toMatchObject({
+            error: {
+              code: -32602,
+              message,
+              data: { reason: 'invalid_arguments', recovery: { hint } },
+            },
+          });
+          const lines = (result.content as Array<{ text?: string }>)
+            .map((b) => b.text ?? '')
+            .join('\n')
+            .split('\n');
+          expect(lines).toContain(`Error: ${message}`);
+          expect(lines).toContain(`Recovery: ${hint}`);
+          expect(lines).toContain('(reason invalid_arguments)');
+          expect(svc.runAppleScript).not.toHaveBeenCalled();
+          expect(svc.runJxa).not.toHaveBeenCalled();
+        });
+      }
+    }
   });
 
   it('throws when title is empty', () => {
     expect(() => macosSendNotification.input.parse({ title: '' })).toThrow();
-  });
-
-  it('formats success output', () => {
-    const blocks = macosSendNotification.format!({ success: true });
-    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
-    expect(text).toContain('true');
   });
 });

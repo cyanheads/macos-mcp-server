@@ -4,12 +4,13 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { appleScriptLiteral } from '@/services/osascript/applescript-literal.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 
 export const macosSendNotification = tool('macos_send_notification', {
   title: 'Send macOS Notification',
   description:
-    "Post a notification to macOS Notification Center via osascript. The notification appears immediately and uses the calling process's notification settings. Title is required; body, subtitle, and sound are optional. Each call creates a new notification (not idempotent). Do Not Disturb does not suppress notifications sent via osascript.",
+    "Post a notification to macOS Notification Center via osascript. The notification is delivered immediately and follows the calling process's notification settings, and an active Focus such as Do Not Disturb silences it unless that Focus allows the posting app. Title is required; body, subtitle, and sound are optional. Each call creates a new notification (not idempotent).",
   annotations: { readOnlyHint: false, openWorldHint: false, idempotentHint: false },
   input: z.object({
     title: z.string().min(1).describe('Notification title (required).'),
@@ -27,10 +28,10 @@ export const macosSendNotification = tool('macos_send_notification', {
   async handler(input, ctx) {
     const osascript = getOsascriptService();
 
-    const bodyStr = JSON.stringify(input.body ?? '');
-    const titleStr = JSON.stringify(input.title);
-    const parts = [`display notification ${bodyStr} with title ${titleStr}`];
-    if (input.subtitle) parts.push(`subtitle ${JSON.stringify(input.subtitle)}`);
+    const title = appleScriptLiteral(input.title, 'title');
+    const body = appleScriptLiteral(input.body ?? '', 'body');
+    const parts = [`display notification ${body} with title ${title}`];
+    if (input.subtitle) parts.push(`subtitle ${appleScriptLiteral(input.subtitle, 'subtitle')}`);
     if (input.sound) parts.push('sound name "default"');
 
     await osascript.runAppleScript(parts.join(' '), ctx);

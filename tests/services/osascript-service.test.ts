@@ -30,6 +30,7 @@ vi.mock('node:child_process', () => ({
   execFile: execFileMock,
 }));
 
+import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
 import { OsascriptService } from '@/services/osascript/osascript-service.js';
 
 const ACCESSIBILITY_DENIED =
@@ -56,18 +57,35 @@ const AX_NO_VALUE =
 
 const SCRIPT = 'tell application "Finder" to delete POSIX file "/zz/no/such/path/qx.txt"';
 
-/** Makes the next osascript call fail the way Node's execFile reports a non-zero exit. */
-function failWith(stderr: string, extra: Record<string, unknown> = {}): void {
-  execFileMock.mockImplementation((cmd, args, _opts, cb) => {
-    cb(
-      Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\n${stderr}`), {
-        // Node sets the exit status here as a number; ErrnoException types it as a string.
-        code: 1 as unknown as string,
-        stdout: '',
-        stderr,
-        ...extra,
-      }),
-    );
+/** Node's execFile rejection for a run whose signal fired. */
+const abortError = () =>
+  Object.assign(new Error('The operation was aborted'), { name: 'AbortError', code: 'ABORT_ERR' });
+
+type Outcome = { stdout: string; stderr?: string } | { fail: string; extra?: object };
+
+/**
+ * Answers each osascript call as Node's execFile does: the output on success, or
+ * a non-zero exit whose message carries the command line and `fail` as stderr. A
+ * run whose signal has fired rejects with an AbortError; with `cancelDuringRun`,
+ * the cancel lands while osascript runs.
+ */
+function answer(outcome: Outcome, cancelDuringRun?: AbortController): void {
+  execFileMock.mockImplementation((cmd, args, opts, cb) => {
+    cancelDuringRun?.abort();
+    if ((opts as { signal?: AbortSignal }).signal?.aborted) cb(abortError());
+    else if ('stdout' in outcome)
+      cb(null, { stdout: outcome.stdout, stderr: outcome.stderr ?? '' });
+    else {
+      cb(
+        Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\n${outcome.fail}`), {
+          // Node sets the exit status here as a number; ErrnoException types it as a string.
+          code: 1 as unknown as string,
+          stdout: '',
+          stderr: outcome.fail,
+          ...outcome.extra,
+        }),
+      );
+    }
     return { pid: 1 };
   });
 }
@@ -86,141 +104,121 @@ async function failure(runner: Runner): Promise<{
   return err as never;
 }
 
-/** The recovery hint a failure carries, or '' when it has none. */
-function hintOf(err: { data?: Record<string, unknown> }): string {
-  return (err.data?.recovery as { hint?: string } | undefined)?.hint ?? '';
-}
+const ACCESSIBILITY_HINT =
+  'Grant Accessibility in System Settings > Privacy & Security > Accessibility for your terminal or MCP host app.';
+
+/** Each denial's stderr, the message it raises, and the pane its hint names. */
+const DENIALS: Array<[string, string, string, string]> = [
+  [
+    'an Accessibility denial (-25211)',
+    ACCESSIBILITY_DENIED,
+    'Accessibility permission denied: execution error: System Events got an error: osascript is not allowed assistive access. (-25211)',
+    ACCESSIBILITY_HINT,
+  ],
+  [
+    'an assistive-access denial that carries -1719',
+    ACCESSIBILITY_DENIED_1719,
+    'Accessibility permission denied: execution error: System Events got an error: osascript is not allowed assistive access. (-1719)',
+    ACCESSIBILITY_HINT,
+  ],
+  [
+    'an Automation denial for Finder',
+    AUTOMATION_DENIED_FINDER,
+    'Automation permission denied for Finder: execution error: Not authorized to send Apple events to Finder. (-1743)',
+    'Grant Automation > Finder permission in System Settings > Privacy & Security > Automation for your terminal or MCP host app.',
+  ],
+  [
+    'an Automation denial for System Events',
+    AUTOMATION_DENIED_SYSTEM_EVENTS,
+    'Automation permission denied for System Events: execution error: Not authorized to send Apple events to System Events. (-1743)',
+    'Grant Automation > System Events permission in System Settings > Privacy & Security > Automation for your terminal or MCP host app.',
+  ],
+];
+
+/**
+ * Failures that are not denials — `-1719` and `-25212` among them — and the
+ * message each raises: the AppleScript error line alone, never the script, the
+ * sandbox lines above it, or Node's command line.
+ */
+const GENERIC_FAILURES: Array<[string, string, string]> = [
+  [
+    'Finder refusing a path, under sandbox noise',
+    FINDER_REFUSED,
+    'osascript failed: execution error: Finder got an error: Handler can’t handle objects of this class. (-10010)',
+  ],
+  [
+    'an invalid index (-1719)',
+    FINDER_INVALID_INDEX,
+    'osascript failed: execution error: Finder got an error: Can’t get front window. Invalid index. (-1719)',
+  ],
+  [
+    'an AX attribute with no value (-25212)',
+    AX_NO_VALUE,
+    'osascript failed: execution error: System Events got an error: Can’t get value of attribute "AXFocusedWindow" of process "Finder". (-25212)',
+  ],
+  [
+    'a JXA-thrown marker',
+    JXA_THROWN,
+    'osascript failed: execution error: Error: Error: not_running (-2700)',
+  ],
+  ['an empty stderr', '', 'osascript failed: exited with status 1'],
+];
 
 describe('OsascriptService', () => {
   beforeEach(() => {
     execFileMock.mockReset();
   });
 
-  it('returns trimmed stdout and stderr on success', async () => {
-    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
-      cb(null, { stdout: ' 56,false \n', stderr: '' });
-      return { pid: 1 };
-    });
-    const svc = new OsascriptService();
-    await expect(svc.runAppleScript('get volume settings', createMockContext())).resolves.toEqual({
-      stdout: '56,false',
-      stderr: '',
-    });
-    expect(execFileMock.mock.calls[0]?.[1]).toEqual(['-e', 'get volume settings']);
-  });
-
-  it('passes JXA as a discrete -l JavaScript -e argv', async () => {
-    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
-      cb(null, { stdout: '[]', stderr: '' });
-      return { pid: 1 };
-    });
-    await new OsascriptService().runJxa('JSON.stringify([])', createMockContext());
-    expect(execFileMock.mock.calls[0]?.[1]).toEqual([
-      '-l',
-      'JavaScript',
-      '-e',
-      'JSON.stringify([])',
-    ]);
-  });
+  it.each<[Runner, string, string[]]>([
+    ['runAppleScript', 'get volume settings', ['-e', 'get volume settings']],
+    ['runJxa', 'JSON.stringify([])', ['-l', 'JavaScript', '-e', 'JSON.stringify([])']],
+  ])(
+    '%s runs osascript by its absolute path with the script as one argv entry and returns trimmed output',
+    async (runner, script, argv) => {
+      answer({ stdout: ' 56,false \n', stderr: ' note \n' });
+      await expect(new OsascriptService()[runner](script, createMockContext())).resolves.toEqual({
+        stdout: '56,false',
+        stderr: 'note',
+      });
+      expect(execFileMock.mock.calls.map((c) => c.slice(0, 2))).toEqual([
+        [SYSTEM_BINARIES.osascript, argv],
+      ]);
+    },
+  );
 
   for (const runner of RUNNERS) {
     describe(runner, () => {
       it('maps a killed process to Timeout', async () => {
-        failWith('', { killed: true, signal: 'SIGTERM' });
+        answer({ fail: '', extra: { killed: true, signal: 'SIGTERM' } });
         const err = await failure(runner);
         expect(err.code).toBe(JsonRpcErrorCode.Timeout);
+        expect(err.message).toBe('osascript timed out after 10000ms');
       });
 
-      it('stamps accessibility_required on an Accessibility denial and names that pane', async () => {
-        failWith(ACCESSIBILITY_DENIED);
-        const err = await failure(runner);
-        expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
-        expect(err.data).toMatchObject({
-          reason: 'accessibility_required',
-          recovery: { hint: expect.stringContaining('Privacy & Security > Accessibility') },
-        });
-        expect(err.message).toContain('Accessibility permission denied');
-        expect(err.message).toContain('(-25211)');
-      });
+      it.each(DENIALS)(
+        'stamps accessibility_required on %s and names the denied pane',
+        async (_label, stderr, message, hint) => {
+          answer({ fail: stderr });
+          const err = await failure(runner);
+          expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
+          expect(err.message).toBe(message);
+          expect(err.data).toEqual({ reason: 'accessibility_required', recovery: { hint } });
+        },
+      );
 
-      it('stamps accessibility_required on an Automation denial and names the Automation pane and target app', async () => {
-        failWith(AUTOMATION_DENIED_FINDER);
-        const err = await failure(runner);
-        expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
-        expect(err.data).toMatchObject({ reason: 'accessibility_required' });
-        const hint = hintOf(err);
-        expect(hint).toContain('Privacy & Security > Automation');
-        expect(hint).toContain('Finder');
-        expect(hint).not.toContain('> Accessibility');
-        expect(err.message).toContain('Automation permission denied');
-        expect(err.message).not.toContain('Accessibility');
-        expect(err.message).toContain('(-1743)');
-      });
-
-      it('names System Events as the Automation target when that is the denied app', async () => {
-        failWith(AUTOMATION_DENIED_SYSTEM_EVENTS);
-        const err = await failure(runner);
-        expect(hintOf(err)).toContain('System Events');
-      });
-
-      it('keeps the AppleScript error text and number on a generic failure, without the script', async () => {
-        failWith(FINDER_REFUSED);
-        const err = await failure(runner);
-        expect(err.code).toBe(JsonRpcErrorCode.InternalError);
-        expect(err.message).toContain(
-          'Finder got an error: Handler can’t handle objects of this class. (-10010)',
-        );
-        expect(err.message).not.toContain('Command failed');
-        expect(err.message).not.toContain('delete POSIX file');
-        expect(err.message).not.toContain('sandbox_extension_issue_file');
-        expect(err.data?.script).toBeUndefined();
-        expect(JSON.stringify(err.data ?? {})).not.toContain('delete POSIX file');
-      });
-
-      it('classifies an invalid-index failure (-1719) as a generic failure, not a denial', async () => {
-        failWith(FINDER_INVALID_INDEX);
-        const err = await failure(runner);
-        expect(err.code).toBe(JsonRpcErrorCode.InternalError);
-        expect(err.data?.reason).toBeUndefined();
-        expect(err.message).toContain('Can’t get front window. Invalid index. (-1719)');
-        expect(err.message).not.toContain('permission');
-      });
-
-      it('classifies a no-value AX failure (-25212) as a generic failure, not a denial', async () => {
-        failWith(AX_NO_VALUE);
-        const err = await failure(runner);
-        expect(err.code).toBe(JsonRpcErrorCode.InternalError);
-        expect(err.data?.reason).toBeUndefined();
-        expect(err.message).toContain('(-25212)');
-      });
-
-      it('still classifies an assistive-access denial that carries -1719 as accessibility_required', async () => {
-        failWith(ACCESSIBILITY_DENIED_1719);
-        const err = await failure(runner);
-        expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
-        expect(err.data).toMatchObject({
-          reason: 'accessibility_required',
-          recovery: { hint: expect.stringContaining('Privacy & Security > Accessibility') },
-        });
-      });
-
-      it('keeps a JXA-thrown marker in the generic failure message', async () => {
-        failWith(JXA_THROWN);
-        const err = await failure(runner);
-        expect(err.message).toContain('not_running (-2700)');
-      });
-
-      it('never falls back to the Node message (which carries the command line) when stderr is empty', async () => {
-        failWith('');
-        const err = await failure(runner);
-        expect(err.code).toBe(JsonRpcErrorCode.InternalError);
-        expect(err.message).not.toContain('Command failed');
-        expect(err.message).not.toContain('osascript -');
-        expect(err.message).not.toContain('delete POSIX file');
-      });
+      it.each(GENERIC_FAILURES)(
+        'classifies %s as a generic failure carrying only the error line',
+        async (_label, stderr, message) => {
+          answer({ fail: stderr });
+          const err = await failure(runner);
+          expect(err.code).toBe(JsonRpcErrorCode.InternalError);
+          expect(err.message).toBe(message);
+          expect(err.data).toBeUndefined();
+        },
+      );
 
       it('logs the script source at debug level only', async () => {
-        failWith(FINDER_REFUSED);
+        answer({ fail: FINDER_REFUSED });
         const ctx = createMockContext();
         await new OsascriptService()[runner](SCRIPT, ctx).catch(() => undefined);
         const calls = (ctx.log as MockContextLogger).calls;
@@ -228,6 +226,49 @@ describe('OsascriptService', () => {
         expect(withScript.length).toBeGreaterThan(0);
         expect(withScript.every((c) => c.level === 'debug')).toBe(true);
       });
+    });
+  }
+});
+
+describe('OsascriptService cancellation', () => {
+  beforeEach(() => {
+    execFileMock.mockReset();
+    answer({ stdout: 'done' });
+  });
+
+  for (const runner of RUNNERS) {
+    it(`${runner}: a request already cancelled rejects with its AbortError and starts no osascript`, async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const svc = new OsascriptService();
+      const err = await svc[runner](SCRIPT, createMockContext({ signal: controller.signal })).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ name: 'AbortError' });
+      expect(err).not.toHaveProperty('data');
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
+
+    it(`${runner}: a request cancelled while osascript runs rejects with the AbortError, not an osascript failure`, async () => {
+      const controller = new AbortController();
+      answer({ stdout: 'done' }, controller);
+      const svc = new OsascriptService();
+      const err = await svc[runner](SCRIPT, createMockContext({ signal: controller.signal })).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ name: 'AbortError', code: 'ABORT_ERR' });
+      expect(err).not.toHaveProperty('data');
+    });
+
+    it(`${runner}: passes the caller’s signal beside each call’s own timeout`, async () => {
+      const ctx = createMockContext();
+      const svc = new OsascriptService();
+      await svc[runner](SCRIPT, ctx);
+      await svc[runner](SCRIPT, ctx, { timeoutMs: 5_000 });
+      expect(execFileMock.mock.calls.map((c) => c[2])).toEqual([
+        { timeout: 10_000, signal: ctx.signal },
+        { timeout: 5_000, signal: ctx.signal },
+      ]);
     });
   }
 });

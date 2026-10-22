@@ -13,9 +13,11 @@
  * @module tests/tools/missing-arguments.test
  */
 
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from '@cyanheads/mcp-ts-core';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type ExecFileMock = (
   cmd: string,
@@ -44,6 +46,7 @@ import { macosManageFocus } from '@/mcp-server/tools/definitions/macos-manage-fo
 import { macosManageWindows } from '@/mcp-server/tools/definitions/macos-manage-windows.tool.js';
 import { macosTakeScreenshot } from '@/mcp-server/tools/definitions/macos-take-screenshot.tool.js';
 import { initAudioService } from '@/services/audio/audio-service.js';
+import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
 import { initDisplayService } from '@/services/display/display-service.js';
 import { initOsascriptService } from '@/services/osascript/osascript-service.js';
 import { initScreencaptureService } from '@/services/screencapture/screencapture-service.js';
@@ -55,11 +58,17 @@ function contentText(result: ToolResult): string {
   return (result.content ?? []).map((b) => ('text' in b ? String(b.text) : '')).join('\n');
 }
 
-function errorOf(result: ToolResult): {
+interface ErrorEnvelope {
   code?: number;
+  data?: {
+    reason?: string;
+    recovery?: { hint?: string };
+    issues?: Array<{ path: Array<string | number> }>;
+  };
   message?: string;
-  data?: { reason?: string; recovery?: { hint?: string } };
-} {
+}
+
+function errorOf(result: ToolResult): ErrorEnvelope {
   return (result.structuredContent as { error?: never } | undefined)?.error ?? {};
 }
 
@@ -72,22 +81,32 @@ function inputJsonSchema<T>(tool: AnyTool): T {
   return z.toJSONSchema(tool.input, { io: 'input' }) as unknown as T;
 }
 
-/** Asserts the rejection shape and that the hint names every listed argument. */
-function expectInvalidArguments(result: ToolResult, names: string[]): void {
+/** Asserts the argument-validation rejection on both surfaces and returns its envelope. */
+function expectInvalidArguments(result: ToolResult): ErrorEnvelope {
   const error = errorOf(result);
   expect(result.isError).toBe(true);
   expect(error.code).toBe(-32602);
   expect(error.data?.reason).toBe('invalid_arguments');
-  const hint = error.data?.recovery?.hint ?? '';
-  for (const name of names) expect(hint).toContain(name);
-  expect(contentText(result)).toContain('(reason invalid_arguments)');
+  expect(contentText(result).split('\n').at(-1)).toBe('(reason invalid_arguments)');
+  return error;
 }
+
+/** An existing directory for screenshot paths, so a capture gets as far as screencapture. */
+const SHOT_DIR = mkdtempSync('/tmp/macos-mcp-missing-args-');
+
+/** The failure a capture to `name` in SHOT_DIR reports when screencapture writes nothing. */
+const noFileWritten = (name: string) =>
+  `Could not read the size of the screenshot for "${join(realpathSync(SHOT_DIR), name)}": screencapture wrote no file.`;
 
 beforeAll(() => {
   initOsascriptService({} as never, {} as never);
   initAudioService({} as never, {} as never);
   initDisplayService({} as never, {} as never);
   initScreencaptureService({} as never, {} as never);
+});
+
+afterAll(() => {
+  rmSync(SHOT_DIR, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -98,136 +117,178 @@ beforeEach(() => {
   });
 });
 
-/** [tool, tool name, arguments, argument names the hint must carry] */
-const MISSING: Array<[AnyTool, string, Record<string, unknown>, string[]]> = [
-  [macosControlVolume, 'macos_control_volume', { action: 'set' }, ['level', 'muted']],
-  [macosManageApps, 'macos_manage_apps', { action: 'launch' }, ['app_name', 'bundle_id']],
-  [macosManageApps, 'macos_manage_apps', { action: 'quit' }, ['app_name']],
-  [macosManageApps, 'macos_manage_apps', { action: 'force_quit' }, ['app_name']],
-  [macosManageApps, 'macos_manage_apps', { action: 'hide' }, ['app_name']],
-  [macosManageApps, 'macos_manage_apps', { action: 'show' }, ['app_name']],
-  [macosManageWindows, 'macos_manage_windows', { action: 'focus' }, ['app_name', 'window_title']],
+/** [tool, tool name, arguments, the hint the rejection carries] */
+const MISSING: Array<[AnyTool, string, Record<string, unknown>, string]> = [
+  [
+    macosControlVolume,
+    'macos_control_volume',
+    { action: 'set' },
+    'action=set requires at least one of level or muted.',
+  ],
+  [
+    macosManageApps,
+    'macos_manage_apps',
+    { action: 'launch' },
+    'action=launch requires at least one of app_name or bundle_id.',
+  ],
+  [
+    macosManageApps,
+    'macos_manage_apps',
+    { action: 'launch', app_name: '', bundle_id: '' },
+    'action=launch requires at least one of app_name or bundle_id.',
+  ],
+  [macosManageApps, 'macos_manage_apps', { action: 'quit' }, 'Provide app_name.'],
+  [
+    macosManageApps,
+    'macos_manage_apps',
+    { action: 'quit', app_name: '' },
+    'app_name: app_name is required for action=quit.',
+  ],
+  [macosManageApps, 'macos_manage_apps', { action: 'force_quit' }, 'Provide app_name.'],
+  [macosManageApps, 'macos_manage_apps', { action: 'hide' }, 'Provide app_name.'],
+  [macosManageApps, 'macos_manage_apps', { action: 'show' }, 'Provide app_name.'],
+  [
+    macosManageWindows,
+    'macos_manage_windows',
+    { action: 'focus' },
+    'action=focus requires at least one of app_name or window_title.',
+  ],
   [
     macosManageWindows,
     'macos_manage_windows',
     { action: 'move' },
-    ['app_name', 'window_title', 'x', 'y'],
+    'action=move requires at least one of app_name or window_title. Provide x and y.',
   ],
   [
     macosManageWindows,
     'macos_manage_windows',
     { action: 'resize' },
-    ['app_name', 'window_title', 'width', 'height'],
+    'action=resize requires at least one of app_name or window_title. Provide width and height.',
   ],
   [
     macosManageWindows,
     'macos_manage_windows',
     { action: 'move_resize' },
-    ['app_name', 'window_title', 'x', 'y', 'width', 'height'],
+    'action=move_resize requires at least one of app_name or window_title. Provide x, y, width and height.',
   ],
   [
     macosManageWindows,
     'macos_manage_windows',
     { action: 'minimize' },
-    ['app_name', 'window_title'],
+    'action=minimize requires at least one of app_name or window_title.',
   ],
   [
     macosManageWindows,
     'macos_manage_windows',
     { action: 'fullscreen' },
-    ['app_name', 'window_title'],
+    'action=fullscreen requires at least one of app_name or window_title.',
   ],
-  [macosManageWindows, 'macos_manage_windows', { action: 'close' }, ['app_name', 'window_title']],
-  [macosManageWindows, 'macos_manage_windows', { action: 'move', app_name: 'Finder' }, ['x', 'y']],
+  [
+    macosManageWindows,
+    'macos_manage_windows',
+    { action: 'close' },
+    'action=close requires at least one of app_name or window_title.',
+  ],
+  [
+    macosManageWindows,
+    'macos_manage_windows',
+    { action: 'move', app_name: 'Finder' },
+    'Provide x and y.',
+  ],
   [
     macosManageWindows,
     'macos_manage_windows',
     { action: 'resize', app_name: 'Finder' },
-    ['width', 'height'],
+    'Provide width and height.',
   ],
   [
     macosManageWindows,
     'macos_manage_windows',
     { action: 'move_resize', app_name: 'Finder' },
-    ['x', 'y', 'width', 'height'],
+    'Provide x, y, width and height.',
   ],
-  [macosControlAudio, 'macos_control_audio', { action: 'switch_output' }, ['device']],
-  [macosControlAudio, 'macos_control_audio', { action: 'switch_input' }, ['device']],
-  [macosManageFinder, 'macos_manage_finder', { action: 'reveal' }, ['path']],
-  [macosManageFinder, 'macos_manage_finder', { action: 'open_with' }, ['path']],
-  [macosManageFinder, 'macos_manage_finder', { action: 'trash' }, ['path']],
-  [macosManageDisplays, 'macos_manage_displays', { action: 'apply_layout' }, ['layout_name']],
-  [macosManageFocus, 'macos_manage_focus', { action: 'set' }, ['mode']],
-  [macosControlAppearance, 'macos_control_appearance', { action: 'set' }, ['mode']],
-  [macosTakeScreenshot, 'macos_take_screenshot', { target: 'region' }, ['region']],
-  [macosTakeScreenshot, 'macos_take_screenshot', { target: 'window' }, ['app_name']],
+  [macosControlAudio, 'macos_control_audio', { action: 'switch_output' }, 'Provide device.'],
+  [macosControlAudio, 'macos_control_audio', { action: 'switch_input' }, 'Provide device.'],
+  [macosManageFinder, 'macos_manage_finder', { action: 'reveal' }, 'Provide path.'],
+  [macosManageFinder, 'macos_manage_finder', { action: 'open_with' }, 'Provide path.'],
+  [macosManageFinder, 'macos_manage_finder', { action: 'trash' }, 'Provide path.'],
+  [
+    macosManageDisplays,
+    'macos_manage_displays',
+    { action: 'apply_layout' },
+    'Provide layout_name.',
+  ],
+  [macosManageFocus, 'macos_manage_focus', { action: 'set' }, 'Provide mode.'],
+  [macosControlAppearance, 'macos_control_appearance', { action: 'set' }, 'Provide mode.'],
+  [macosTakeScreenshot, 'macos_take_screenshot', { target: 'region' }, 'Provide region.'],
+  [macosTakeScreenshot, 'macos_take_screenshot', { target: 'window' }, 'Provide app_name.'],
 ];
 
-describe('missing per-action arguments are rejected at argument validation', () => {
-  for (const [tool, name, args, names] of MISSING) {
-    it(`${name} ${JSON.stringify(args)} → invalid_arguments naming ${names.join(', ')}, no subprocess`, async () => {
+describe('missing or blank per-action arguments are rejected at argument validation', () => {
+  for (const [tool, name, args, hint] of MISSING) {
+    it(`${name} ${JSON.stringify(args)} → invalid_arguments "${hint}", no subprocess`, async () => {
       const result = await call(tool, args);
-      expectInvalidArguments(result, names);
+      expect(expectInvalidArguments(result).data?.recovery?.hint).toBe(hint);
       expect(execFileMock).not.toHaveBeenCalled();
     });
   }
-
-  it('an either-of requirement is one pathless issue whose hint names both arguments', async () => {
-    const result = await call(macosControlVolume, { action: 'set' });
-    const hint = errorOf(result).data?.recovery?.hint ?? '';
-    expect(hint).toMatch(/level/);
-    expect(hint).toMatch(/muted/);
-    expect(hint).not.toMatch(/^Provide level\.$/);
-  });
-
-  it('a single-field requirement names only that field', async () => {
-    const result = await call(macosManageApps, { action: 'quit' });
-    expect(errorOf(result).data?.recovery?.hint).toBe('Provide app_name.');
-  });
-
-  it('a blank string does not satisfy a requirement', async () => {
-    const result = await call(macosManageApps, { action: 'quit', app_name: '' });
-    expectInvalidArguments(result, ['app_name']);
-    expect(execFileMock).not.toHaveBeenCalled();
-  });
-
-  it('a blank alternative does not satisfy an either-of requirement', async () => {
-    const result = await call(macosManageApps, { action: 'launch', app_name: '', bundle_id: '' });
-    expectInvalidArguments(result, ['app_name', 'bundle_id']);
-    expect(execFileMock).not.toHaveBeenCalled();
-  });
 });
 
 describe('numeric bounds are enforced by the schema', () => {
-  const REJECTED: Array<[AnyTool, string, Record<string, unknown>]> = [
-    [macosTakeScreenshot, 'display_index -1', { target: 'display', display_index: -1 }],
-    [macosTakeScreenshot, 'display_index 1.7', { target: 'display', display_index: 1.7 }],
+  /** [tool, label, arguments, the path of each argument the rejection names] */
+  const REJECTED: Array<[AnyTool, string, Record<string, unknown>, string[][]]> = [
+    [
+      macosTakeScreenshot,
+      'display_index -1',
+      { target: 'display', display_index: -1 },
+      [['display_index']],
+    ],
+    [
+      macosTakeScreenshot,
+      'display_index 1.7',
+      { target: 'display', display_index: 1.7 },
+      [['display_index']],
+    ],
     [
       macosTakeScreenshot,
       'region 0×0',
       { target: 'region', region: { x: 0, y: 0, width: 0, height: 0 } },
+      [
+        ['region', 'width'],
+        ['region', 'height'],
+      ],
     ],
     [
       macosTakeScreenshot,
       'region -50×-50',
       { target: 'region', region: { x: 0, y: 0, width: -50, height: -50 } },
+      [
+        ['region', 'width'],
+        ['region', 'height'],
+      ],
     ],
     [
       macosManageWindows,
       'windows resize width 0',
       { action: 'resize', app_name: 'Finder', width: 0, height: 600 },
+      [['width']],
     ],
     [
       macosManageWindows,
       'windows move_resize height -10',
       { action: 'move_resize', app_name: 'Finder', x: 0, y: 0, width: 800, height: -10 },
+      [['height']],
     ],
+    [macosControlVolume, 'volume level -1', { action: 'set', level: -1 }, [['level']]],
+    [macosControlVolume, 'volume level 101', { action: 'set', level: 101 }, [['level']]],
   ];
 
-  for (const [tool, label, args] of REJECTED) {
-    it(`${label} → invalid_arguments, no subprocess, no command line in the error`, async () => {
+  for (const [tool, label, args, paths] of REJECTED) {
+    it(`${label} → invalid_arguments naming ${paths.map((p) => p.join('.')).join(', ')}, no subprocess, no command line in the error`, async () => {
       const result = await call(tool, args);
-      expectInvalidArguments(result, []);
+      expect(expectInvalidArguments(result).data?.issues?.map((issue) => issue.path)).toEqual(
+        paths,
+      );
       expect(execFileMock).not.toHaveBeenCalled();
       expect(contentText(result)).not.toContain('screencapture');
       expect(contentText(result)).not.toContain('Command failed');
@@ -235,61 +296,41 @@ describe('numeric bounds are enforced by the schema', () => {
   }
 });
 
-describe('calls that were valid before stay valid', () => {
-  it('volume get accepts an off-action level argument', async () => {
-    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
-      cb(null, { stdout: '40,false', stderr: '' });
-      return { pid: 1 };
-    });
-    const result = await call(macosControlVolume, { action: 'get', level: 40 });
-    expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toMatchObject({ level: 40, muted: false });
-  });
-
-  it('volume set with only muted is accepted', async () => {
-    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
-      cb(null, { stdout: '40,true', stderr: '' });
-      return { pid: 1 };
-    });
-    const result = await call(macosControlVolume, { action: 'set', muted: true });
-    expect(result.isError).toBeFalsy();
-    expect(execFileMock.mock.calls[0]?.[1]).toEqual(['-e', 'set volume with output muted']);
-  });
-
+describe('calls the requirements and bounds leave valid are accepted', () => {
   it('apps list accepts an off-action app_name argument', async () => {
     execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
       cb(null, { stdout: '[]', stderr: '' });
       return { pid: 1 };
     });
     const result = await call(macosManageApps, { action: 'list', app_name: 'Finder' });
-    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({ action: 'list', apps: [] });
   });
 
   it('screenshot target=display without display_index captures display 1 (index 0)', async () => {
     const result = await call(macosTakeScreenshot, {
       target: 'display',
-      path: '/tmp/zz-nonexistent-dir-qx/shot.png',
+      path: join(SHOT_DIR, 'display.png'),
     });
-    const capture = execFileMock.mock.calls.find((c) => c[0] === 'screencapture');
-    expect(capture?.[1]).toContain('-D1');
-    // The fake screencapture writes nothing, so the post-capture check reports it.
-    expect(errorOf(result).data?.reason).toBe('path_not_writable');
+    const capture = execFileMock.mock.calls.find((c) => c[0] === SYSTEM_BINARIES.screencapture);
+    expect(capture?.[1].slice(0, 2)).toEqual(['-x', '-D1']);
+    // The fake screencapture writes nothing, so reading the capture's size reports it.
+    expect(errorOf(result).message).toBe(noFileWritten('display.png'));
   });
 
   it('screenshot region keeps negative x/y (displays left of or above the primary)', async () => {
     const result = await call(macosTakeScreenshot, {
       target: 'region',
       region: { x: -1920, y: -200, width: 100, height: 50 },
-      path: '/tmp/zz-nonexistent-dir-qx/shot.png',
+      path: join(SHOT_DIR, 'region.png'),
     });
-    const capture = execFileMock.mock.calls.find((c) => c[0] === 'screencapture');
-    expect(capture?.[1]).toContain('-1920,-200,100,50');
-    expect(errorOf(result).data?.reason).toBe('path_not_writable');
+    const capture = execFileMock.mock.calls.find((c) => c[0] === SYSTEM_BINARIES.screencapture);
+    expect(capture?.[1].slice(0, 3)).toEqual(['-x', '-R', '-1920,-200,100,50']);
+    expect(errorOf(result).message).toBe(noFileWritten('region.png'));
   });
 });
 
 describe('inputSchema advertises the per-action requirement', () => {
-  /** Root property lists as they were before the requirement was added — must not change. */
+  /** Each tool's root properties in declaration order: the per-action requirement adds none. */
   const ROOT_PROPERTIES: Array<[AnyTool, string, string, string[]]> = [
     [macosManageApps, 'macos_manage_apps', 'action', ['action', 'app_name', 'bundle_id', 'hidden']],
     [
@@ -318,7 +359,7 @@ describe('inputSchema advertises the per-action requirement', () => {
       macosTakeScreenshot,
       'macos_take_screenshot',
       'target',
-      ['target', 'app_name', 'display_index', 'region', 'path', 'include_data'],
+      ['target', 'app_name', 'display_index', 'region', 'path', 'overwrite', 'include_data'],
     ],
   ];
 
@@ -408,6 +449,8 @@ describe('inputSchema advertises the per-action requirement', () => {
     }>(macosTakeScreenshot);
     expect(schema.properties.display_index.type).toBe('integer');
     expect(schema.properties.display_index.minimum).toBe(0);
-    expect(schema.properties.display_index.description).toMatch(/[Dd]efaults to 0/);
+    expect(schema.properties.display_index.description).toBe(
+      '0-based display index for target=display: the index macos_manage_displays action=list reports for each display. 0 is the main display. Defaults to 0 when omitted.',
+    );
   });
 });

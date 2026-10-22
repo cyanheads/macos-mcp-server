@@ -16,6 +16,8 @@ import {
   McpError,
 } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
+import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
+import { type OsascriptExclusion, runExclusive } from '@/services/osascript/osascript-exclusion.js';
 import { execFailureDetail } from '@/utils/exec-failure.js';
 
 const execFile = promisify(execFileCallback);
@@ -28,6 +30,14 @@ export interface OsascriptResult {
 
 /** Options for runJxa / runAppleScript. */
 export interface RunOptions {
+  /**
+   * The script's side of the NSScreen / process-enumeration exclusion
+   * (`./osascript-exclusion.ts`): `process-enumeration` for every script that
+   * enumerates System Events processes, `nsscreen-read` for every script that
+   * reads NSScreen. The script waits while a run of the other side is in
+   * flight, and the wait counts against `timeoutMs`.
+   */
+  exclusion?: OsascriptExclusion;
   /** Timeout in milliseconds. Default 10 000. */
   timeoutMs?: number;
 }
@@ -116,32 +126,59 @@ export class OsascriptService {
   }
 
   /**
-   * Run a legacy AppleScript (non-JXA) script.
-   * Caller is responsible for escaping any dynamic values before passing in.
+   * Run a legacy AppleScript (non-JXA) script. Every caller string the script
+   * embeds goes through `appleScriptLiteral()` (`./applescript-literal.ts`),
+   * never `JSON.stringify`: AppleScript does not compile JSON's `\u`, `\b`, and
+   * `\f` escapes.
    */
   runAppleScript(script: string, ctx: Context, opts: RunOptions = {}): Promise<OsascriptResult> {
     ctx.log.debug('runAppleScript', { scriptLen: script.length });
     return this.run(['-e', script], script, ctx, opts);
   }
 
-  /**
-   * Runs osascript and classifies a failure: a timeout, a permission denial
-   * (`accessibility_required`), or a generic failure carrying the AppleScript
-   * error text and number. The script source never enters a thrown error; it is
-   * logged at debug level only.
-   */
-  private async run(
+  /** Runs the script, after taking its side of the exclusion when it has one. */
+  private run(
     args: string[],
     script: string,
     ctx: Context,
     opts: RunOptions,
   ): Promise<OsascriptResult> {
     const timeoutMs = opts.timeoutMs ?? 10_000;
+    if (opts.exclusion === undefined) return this.exec(args, script, ctx, timeoutMs, timeoutMs);
+    return runExclusive(opts.exclusion, ctx.signal, timeoutMs, (remainingMs) =>
+      this.exec(args, script, ctx, remainingMs, timeoutMs),
+    );
+  }
+
+  /**
+   * Runs osascript, killing it after `killAfterMs`, and classifies a failure: a
+   * timeout (reported against the run's whole `timeoutMs`), a permission denial
+   * (`accessibility_required`), or a generic failure carrying the AppleScript
+   * error text and number. The caller's cancellation is rethrown as the abort
+   * it raised, never classified. The script source never enters a thrown error;
+   * it is logged at debug level only.
+   */
+  private async exec(
+    args: string[],
+    script: string,
+    ctx: Context,
+    killAfterMs: number,
+    timeoutMs: number,
+  ): Promise<OsascriptResult> {
+    /**
+     * Checked before the spawn as well as passed to it: Bun can still run a
+     * child whose signal fired before the spawn, and a script may change state.
+     */
+    ctx.signal.throwIfAborted();
     try {
       // No shell: true — argv array only, no interpolation
-      const result = await execFile('osascript', args, { timeout: timeoutMs });
+      const result = await execFile(SYSTEM_BINARIES.osascript, args, {
+        timeout: killAfterMs,
+        signal: ctx.signal,
+      });
       return { stdout: (result.stdout ?? '').trim(), stderr: (result.stderr ?? '').trim() };
     } catch (err: unknown) {
+      if (ctx.signal.aborted) throw err;
       const e = err as { stderr?: string; killed?: boolean };
       const stderr = e.stderr ?? '';
       ctx.log.debug('osascript failed', { script, stderr });
