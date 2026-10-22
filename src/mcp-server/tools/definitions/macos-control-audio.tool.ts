@@ -7,6 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
 import { getAudioService } from '@/services/audio/audio-service.js';
+import { markdownLiteral } from '@/utils/markdown-literal.js';
 
 const AudioDeviceSchema = z
   .object({
@@ -76,13 +77,13 @@ export const macosControlAudio = tool('macos_control_audio', {
       reason: 'device_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'No audio device name matches the provided string.',
-      recovery: 'Call with action=list to see all available devices and their exact names.',
+      recovery: 'Call macos_control_audio with action=list to see every device and its exact name.',
       thrownBy: 'service',
     },
     {
       reason: 'switchaudio_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SwitchAudioSource CLI is not installed at /opt/homebrew/bin/SwitchAudioSource.',
+      when: 'The SwitchAudioSource CLI is not on PATH or in either Homebrew bin directory (/opt/homebrew/bin, /usr/local/bin).',
       recovery: 'Install with: brew install switchaudio-osx',
       thrownBy: 'service',
     },
@@ -136,20 +137,20 @@ export const macosControlAudio = tool('macos_control_audio', {
 
   format: (result) => {
     const lines: string[] = [`**action:** ${result.action}`];
+    // Device names are user-set (Bluetooth names among them), so names and ids render as literals.
+    const device = (d: { id: string; name: string }) =>
+      `name: ${markdownLiteral(d.name)} id: ${markdownLiteral(d.id)}`;
     // List fields
     if (result.devices !== undefined) {
       lines.push(`## Audio Devices (${result.devices.length})`);
       for (const d of result.devices)
-        lines.push(`- name: ${d.name} id: ${d.id} type: ${d.type} is_default: ${d.is_default}`);
+        lines.push(`- ${device(d)} type: ${d.type} is_default: ${d.is_default}`);
     }
     // Current fields
-    if (result.output !== undefined)
-      lines.push(`output: name: ${result.output.name} id: ${result.output.id}`);
-    if (result.input !== undefined)
-      lines.push(`input: name: ${result.input.name} id: ${result.input.id}`);
+    if (result.output !== undefined) lines.push(`output: ${device(result.output)}`);
+    if (result.input !== undefined) lines.push(`input: ${device(result.input)}`);
     // Switch fields
-    if (result.device !== undefined)
-      lines.push(`device: name: ${result.device.name} id: ${result.device.id}`);
+    if (result.device !== undefined) lines.push(`device: ${device(result.device)}`);
     if (result.success !== undefined) lines.push(`success: ${result.success}`);
     return [{ type: 'text', text: lines.join('\n') }];
   },
