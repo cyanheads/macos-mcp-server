@@ -2,10 +2,10 @@
 
 **Server:** macos-mcp-server
 **Version:** 0.2.1
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.14`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.2.0
-**Zod:** ^4.6.5
+**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
+**Zod:** ^4.6.7
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -90,7 +90,15 @@ export const macosControlAppearance = tool('macos_control_appearance', {
 
 **Per-action requirements.** A multi-action tool keeps a flat `z.object` root and declares what each action needs with `withActionRequirements(schema, key, { value: [groups] })` — a group of one names a required argument, a group of several is satisfied by any one of them (`launch: [['app_name', 'bundle_id']]`). That one declaration adds a root `superRefine` (a missing or `""` argument fails as `-32602` `invalid_arguments` before the handler runs, with a hint naming what to send) and advertises the same requirement as a root `anyOf` in `inputSchema` (a free-text string argument also carries `minLength: 1` there, so the advertised schema rejects `""` too). Never throw a domain reason (`not_running`, `path_not_found`, `window_not_found`, …) for an absent argument — those mean a value that was present but wrong. Narrow a guaranteed argument in the handler with `suppliedArg(input.x, 'x')`.
 
-**Subprocess failures.** Never let an `execFile` rejection reach the caller as-is — its message opens with `Command failed: <cmd> <args>`. Map the cases a caller can act on to a declared reason, and wrap the rest with `execFailure('<program>', err)` (`src/utils/exec-failure.ts`), which keeps the program's own error text and nothing else. `OsascriptService` does this for every script: a permission denial (recognized by its stderr text or `-25211`; a bare `-1719` "Invalid index" or `-25212` "no value" is not a denial) carries `reason: 'accessibility_required'` and a hint naming the pane actually denied, a generic failure carries the AppleScript error text and number, and the script source goes only to `ctx.log.debug` (client-visible to a client subscribed at debug). A tool that maps osascript failures to its own reasons checks `isPermissionDenial(err)` (`src/services/osascript/permission-denial.ts`) first and rethrows the denial unchanged.
+**Subprocess failures.** Run a macOS system binary by its `SYSTEM_BINARIES` path (`src/services/binaries/binary-paths.ts`), never by bare name; add a new binary to that table. Resolve displayplacer or SwitchAudioSource with `findThirdPartyBinary()` on every call and throw the tool's not-found reason when it returns undefined. Never let an `execFile` rejection reach the caller as-is — its message opens with `Command failed: <cmd> <args>`. Map the cases a caller can act on to a declared reason, and wrap the rest with `execFailure('<program>', err)` (`src/utils/exec-failure.ts`), which keeps the program's own error text and nothing else. `OsascriptService` does this for every script: a permission denial (recognized by its stderr text or `-25211`; a bare `-1719` "Invalid index" or `-25212` "no value" is not a denial) carries `reason: 'accessibility_required'` and a hint naming the pane actually denied, a generic failure carries the AppleScript error text and number, and the script source goes only to `ctx.log.debug` (client-visible to a client subscribed at debug). A tool that maps osascript failures to its own reasons checks `isPermissionDenial(err)` (`src/services/osascript/permission-denial.ts`) first and rethrows the denial unchanged.
+
+**Cancellation.** Pass `signal: ctx.signal` to every `execFile` (and fs read) beside its own timeout. The first line of any catch that maps, degrades, or falls back is `if (ctx.signal.aborted) throw err;` (or `ctx.signal.throwIfAborted()` in an unbound catch), so the caller's cancellation is rethrown untouched and settles as `RequestCancelled`. Call `ctx.signal.throwIfAborted()` right before a spawn that can change state: Bun can still run a child whose signal already fired.
+
+**Process enumerations and NSScreen reads.** An NSScreen read starting or exiting mid-enumeration breaks a System Events process enumeration, so the two never overlap within the server. Pass `exclusion: 'process-enumeration'` to `runJxa`/`runAppleScript` for every script that enumerates System Events processes (`processes.whose(...)`, `every process whose …`, a bulk read such as `processes.unixId()`), and `exclusion: 'nsscreen-read'` for every osascript that reads NSScreen; an NSScreen read that calls `execFile` directly wraps it in `runExclusive('nsscreen-read', ctx.signal, timeoutMs, (remainingMs) => …)` (`src/services/osascript/osascript-exclusion.ts`) and passes `remainingMs` as its timeout. `FOREGROUND_PROCESSES_JXA` (`src/services/osascript/foreground-processes.ts`) defines `processTable(se)` (bulk unix id, name, and backgroundOnly reads, re-read on -1719/-10000 or when the unix ids change between reads, 3 attempts), `processByPid(se, table, pid)` (by name when the name is unique among all processes, else `processes.whose({unixId})[0]`), and `foregroundProcesses(se)` (`{pid, name, proc}` per foreground process). Never use a specifier System Events returns from a query (`whose(...)()`, `proc.windows()`) to address a process or window: it is by name and reaches the first of that name.
+
+**Text in `content[]`.** Render upstream or caller text in `format()` through `markdownLiteral()` (`src/utils/markdown-literal.ts`) so a CommonMark parse reads it back exactly, and quote a name inside an error message with `quotedText()` (`src/utils/quoted-text.ts`).
+
+**AppleScript literals.** A caller string embedded in an AppleScript (non-JXA) script goes through `appleScriptLiteral(value, argName)` (`src/services/osascript/applescript-literal.ts`), never `JSON.stringify`, whose `\u`, `\b`, and `\f` escapes AppleScript can't compile. It escapes `\` and `"`, writes every other character raw, and throws `-32602` with reason `invalid_arguments` naming `argName` for U+0000 or an unpaired surrogate; build the literal before any other lookup so that rejection comes first. JXA keeps `JSON.stringify`.
 
 **Strict input.** `tool()` stores `input.strict()`, so an unrecognized argument key is rejected by name before the handler runs and `inputSchema` advertises `additionalProperties: false` (JSON Schema 2020-12). Root-level only — a nested `z.object()` still strips unless it is strict itself; an explicit `.passthrough()` / `.catchall()` is honored.
 
@@ -100,19 +108,17 @@ export const macosControlAppearance = tool('macos_control_appearance', {
 
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { getSystemInfoService } from '@/services/system-info/system-info-service.js';
+import {
+  getSystemInfoService,
+  SystemInfoSchema,
+} from '@/services/system-info/system-info-service.js';
 
 export const macosSystemInfoResource = resource('macos://system/info', {
   name: 'macos-system-info',
-  description: 'Current macOS system snapshot: battery, power source, Wi-Fi SSID, hostname, version, uptime, display count.',
+  description: 'Current macOS system snapshot: battery, power source, Wi-Fi association and network name, hostname, version, uptime, display count. A field whose probe fails is null and named in `unavailable`.',
   mimeType: 'application/json',
   params: z.object({}),
-  output: z.object({
-    hostname: z.string().describe('Machine hostname.'),
-    macos_version: z.string().describe('macOS version string.'),
-    uptime_seconds: z.number().describe('Seconds since last boot.'),
-    display_count: z.number().describe('Number of connected displays.'),
-  }),
+  output: SystemInfoSchema,
   async handler(_params, ctx) {
     return getSystemInfoService().getSystemInfo(ctx);
   },
@@ -243,17 +249,28 @@ src/
   services/
     audio/
       audio-service.ts                  # SwitchAudioSource device listing and switching
+    binaries/
+      binary-paths.ts                   # SYSTEM_BINARIES absolute paths; findThirdPartyBinary() PATH + Homebrew lookup
     display/
-      display-service.ts                # displayplacer list and apply-layout
+      display-service.ts                # displayplacer list and apply-layout, JXA NSScreen read for each display's index
     osascript/
+      applescript-literal.ts            # appleScriptLiteral() — AppleScript string literal for caller text
+      foreground-processes.ts           # FOREGROUND_PROCESSES_JXA — processTable / processByPid / foregroundProcesses, each process addressed uniquely
+      osascript-exclusion.ts            # runExclusive() — NSScreen reads and System Events process enumerations never overlap
       osascript-service.ts              # osascript JXA + AppleScript runner with timeout, denial classification
       permission-denial.ts              # isPermissionDenial() — recognizes the service's accessibility_required
+      resolve-app-pids.ts               # resolveAppPids() — app_name to running PIDs from NSWorkspace
+    permissions/
+      permission-probes.ts              # prompt-free Accessibility, Screen Recording, Automation > Finder checks
     screencapture/
-      screencapture-service.ts          # screencapture + sips PNG/JPEG capture
+      screencapture-service.ts          # screencapture PNG capture, path checks and no-replace placement, sips JPEG preview
     system-info/
-      system-info-service.ts            # battery, Wi-Fi, hostname, uptime via system_profiler/pmset
+      system-info-service.ts            # battery (pmset), Wi-Fi (networksetup + ifconfig), version, displays (system_profiler -json); hostname/uptime via node:os
   utils/
     exec-failure.ts                     # caller-safe execFile failure text (never the command line)
+    markdown-literal.ts                 # markdownLiteral() — upstream/caller text as markdown a CommonMark parse reads back exactly
+    parse-json-output.ts                # parseJsonOutput() — subprocess or file JSON through a schema, undefined when unreadable
+    quoted-text.ts                      # quotedText() — a name as a JSON string literal for error messages
   mcp-server/
     tools/
       action-requirements.ts            # withActionRequirements() / suppliedArg() — per-action input requirements
