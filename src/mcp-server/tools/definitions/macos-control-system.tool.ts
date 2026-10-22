@@ -7,6 +7,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { forbidden } from '@cyanheads/mcp-ts-core/errors';
+import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 import { execFailure } from '@/utils/exec-failure.js';
 
@@ -32,9 +33,14 @@ export const macosControlSystem = tool('macos_control_system', {
     ctx.log.info('macos_control_system', { action: input.action });
 
     if (input.action === 'sleep_display') {
+      // Before the spawn too: Bun can still run a child whose signal already fired.
+      ctx.signal.throwIfAborted();
       // pmset displaysleepnow — confirmed working, no permissions needed
-      await execFile('pmset', ['displaysleepnow'], { timeout: 5_000 }).catch((err: unknown) => {
-        throw execFailure('pmset', err);
+      await execFile(SYSTEM_BINARIES.pmset, ['displaysleepnow'], {
+        timeout: 5_000,
+        signal: ctx.signal,
+      }).catch((err: unknown) => {
+        throw ctx.signal.aborted ? err : execFailure('pmset', err);
       });
       return { success: true, action: input.action };
     }
@@ -48,20 +54,20 @@ export const macosControlSystem = tool('macos_control_system', {
       );
       return { success: true, action: input.action };
     } catch {
+      // A cancelled request never falls through to the fallback.
+      ctx.signal.throwIfAborted();
       // Accessibility denied or keystroke failed — try ScreenSaverEngine binary
       try {
-        await execFile(
-          '/System/Library/CoreServices/ScreenSaverEngine.app/Contents/MacOS/ScreenSaverEngine',
-          [],
-          { timeout: 5_000 },
-        );
+        await execFile(SYSTEM_BINARIES.ScreenSaverEngine, [], {
+          timeout: 5_000,
+          signal: ctx.signal,
+        });
         return { success: true, action: input.action };
       } catch {
+        ctx.signal.throwIfAborted();
         // Both paths failed; surface a structured error
         throw forbidden(
-          'Lock screen failed: Accessibility permission is needed for the keystroke method. ' +
-            'Grant Accessibility in System Settings > Privacy & Security > Accessibility, or ' +
-            'verify the ScreenSaverEngine binary exists at /System/Library/CoreServices/ScreenSaverEngine.app.',
+          'Lock screen failed: Accessibility permission is needed for the keystroke method. Grant Accessibility in System Settings > Privacy & Security > Accessibility, or verify the ScreenSaverEngine binary exists at /System/Library/CoreServices/ScreenSaverEngine.app.',
         );
       }
     }

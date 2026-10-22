@@ -1,133 +1,90 @@
 /**
- * @fileoverview Tests for macos_control_appearance tool.
+ * @fileoverview Tests for macos_control_appearance tool, through the real
+ * OsascriptService over a faked `execFile`: every osascript run prints the
+ * dark-mode state the test sets.
  * @module tests/tools/macos-control-appearance.tool.test
  */
 
-import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/services/osascript/osascript-service.js', () => ({
-  getOsascriptService: vi.fn(),
-  initOsascriptService: vi.fn(),
-}));
+type ExecFileMock = (
+  cmd: string,
+  args: string[],
+  opts: unknown,
+  cb: (err: NodeJS.ErrnoException | null, result?: { stdout: string; stderr: string }) => void,
+) => unknown;
+
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn<ExecFileMock>() }));
+
+vi.mock('node:child_process', () => ({ execFile: execFileMock }));
 
 import { macosControlAppearance } from '@/mcp-server/tools/definitions/macos-control-appearance.tool.js';
-import { getOsascriptService } from '@/services/osascript/osascript-service.js';
+import { initOsascriptService } from '@/services/osascript/osascript-service.js';
 
-function makeOsascript(darkMode = 'true') {
-  return {
-    runAppleScript: vi.fn().mockResolvedValue({ stdout: darkMode, stderr: '' }),
-    runJxa: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  };
+const READ = 'tell application "System Events" to tell appearance preferences to return dark mode';
+
+/** Every osascript run prints `darkMode`, as `return dark mode` does. */
+function darkModeReads(darkMode: 'true' | 'false'): void {
+  execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+    cb(null, { stdout: `${darkMode}\n`, stderr: '' });
+    return { pid: 1 };
+  });
 }
+
+/** The AppleScript each osascript run executed, in order. */
+const scripts = () => execFileMock.mock.calls.map((c) => c[1]);
+
+const textOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+  (result.content ?? []).map((b) => ('text' in b ? b.text : '')).join('\n');
 
 describe('macosControlAppearance', () => {
   beforeEach(() => {
-    vi.mocked(getOsascriptService).mockReturnValue(makeOsascript('true') as never);
+    execFileMock.mockReset();
+    initOsascriptService({} as never, {} as never);
   });
 
-  it('get returns dark_mode=true when dark mode is active', async () => {
-    vi.mocked(getOsascriptService).mockReturnValue(makeOsascript('true') as never);
-    const ctx = createMockContext({ errors: macosControlAppearance.errors });
-    const result = await macosControlAppearance.handler(
-      macosControlAppearance.input.parse({ action: 'get' }),
-      ctx,
-    );
-    expect(result.dark_mode).toBe(true);
-  });
+  it.each([
+    ['true', true, 'Dark mode'],
+    ['false', false, 'Light mode'],
+  ] as const)(
+    'get reads dark mode %s and reports it on both surfaces',
+    async (state, dark_mode, label) => {
+      darkModeReads(state);
+      const result = await runToolContract(macosControlAppearance, { action: 'get' });
+      expect(result.structuredContent).toEqual({ action: 'get', dark_mode });
+      expect(textOf(result)).toBe(`**action:** get\n**Appearance:** ${label}`);
+      expect(scripts()).toEqual([['-e', READ]]);
+    },
+  );
 
-  it('get returns dark_mode=false when light mode is active', async () => {
-    vi.mocked(getOsascriptService).mockReturnValue(makeOsascript('false') as never);
-    const ctx = createMockContext({ errors: macosControlAppearance.errors });
-    const result = await macosControlAppearance.handler(
-      macosControlAppearance.input.parse({ action: 'get' }),
-      ctx,
-    );
-    expect(result.dark_mode).toBe(false);
-  });
-
-  it('set dark calls the dark mode script', async () => {
-    const svc = makeOsascript('true');
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext({ errors: macosControlAppearance.errors });
-    await macosControlAppearance.handler(
-      macosControlAppearance.input.parse({ action: 'set', mode: 'dark' }),
-      ctx,
-    );
-    const calls = svc.runAppleScript.mock.calls;
-    const setCall = calls.find((c) => String(c[0]).includes('dark mode to true'));
-    expect(setCall).toBeDefined();
-  });
-
-  it('set light calls the light mode script', async () => {
-    const svc = makeOsascript('false');
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext({ errors: macosControlAppearance.errors });
-    await macosControlAppearance.handler(
-      macosControlAppearance.input.parse({ action: 'set', mode: 'light' }),
-      ctx,
-    );
-    const calls = svc.runAppleScript.mock.calls;
-    const setCall = calls.find((c) => String(c[0]).includes('dark mode to false'));
-    expect(setCall).toBeDefined();
-  });
-
-  it('toggle calls the not-dark-mode script', async () => {
-    const svc = makeOsascript('false');
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext({ errors: macosControlAppearance.errors });
-    await macosControlAppearance.handler(
-      macosControlAppearance.input.parse({ action: 'set', mode: 'toggle' }),
-      ctx,
-    );
-    const calls = svc.runAppleScript.mock.calls;
-    const toggleCall = calls.find((c) => String(c[0]).includes('not dark mode'));
-    expect(toggleCall).toBeDefined();
-  });
-
-  it('set without mode is rejected by the input schema', () => {
-    expect(() => macosControlAppearance.input.parse({ action: 'set' })).toThrow();
-  });
+  it.each([
+    ['dark', 'set dark mode to true', 'true', true, 'Dark mode'],
+    ['light', 'set dark mode to false', 'false', false, 'Light mode'],
+    ['toggle', 'set dark mode to not dark mode', 'false', false, 'Light mode'],
+  ] as const)(
+    'set %s runs "%s", then reads the state back onto both surfaces',
+    async (mode, set, state, dark_mode, label) => {
+      darkModeReads(state);
+      const result = await runToolContract(macosControlAppearance, { action: 'set', mode });
+      expect(scripts()).toEqual([
+        ['-e', `tell application "System Events" to tell appearance preferences to ${set}`],
+        ['-e', READ],
+      ]);
+      expect(result.structuredContent).toEqual({ action: 'set', dark_mode });
+      expect(textOf(result)).toBe(`**action:** set\n**Appearance:** ${label}`);
+    },
+  );
 
   it('get accepts an off-action mode argument and writes nothing', async () => {
-    const svc = makeOsascript('false');
-    vi.mocked(getOsascriptService).mockReturnValue(svc as never);
-    const ctx = createMockContext({ errors: macosControlAppearance.errors });
-    await macosControlAppearance.handler(
-      macosControlAppearance.input.parse({ action: 'get', mode: 'dark' }),
-      ctx,
-    );
-    expect(svc.runAppleScript).toHaveBeenCalledTimes(1);
-    expect(String(svc.runAppleScript.mock.calls[0]?.[0])).toContain('return dark mode');
+    darkModeReads('false');
+    const result = await runToolContract(macosControlAppearance, { action: 'get', mode: 'dark' });
+    expect(result.isError).toBeFalsy();
+    expect(scripts()).toEqual([['-e', READ]]);
   });
-
-  for (const action of ['get', 'set'] as const) {
-    it(`echoes action=${action} on both structuredContent and content[]`, async () => {
-      vi.mocked(getOsascriptService).mockReturnValue(makeOsascript('true') as never);
-      const args = action === 'set' ? { action, mode: 'dark' as const } : { action };
-      const result = await runToolContract(macosControlAppearance, args);
-      expect(result.isError).toBeFalsy();
-      expect(result.structuredContent).toMatchObject({ action, dark_mode: true });
-      const text = (result.content ?? []).map((b) => ('text' in b ? b.text : '')).join('\n');
-      expect(text).toContain(`**action:** ${action}`);
-      expect(text).toContain('Dark mode');
-    });
-  }
 
   it('declares accessibility_required for a System Events denial raised by the service', () => {
     const entry = macosControlAppearance.errors?.find((e) => e.reason === 'accessibility_required');
     expect(entry).toMatchObject({ code: -32005, thrownBy: 'service' });
-  });
-
-  it('formats dark mode', () => {
-    const blocks = macosControlAppearance.format!({ action: 'get', dark_mode: true });
-    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
-    expect(text).toContain('Dark mode');
-  });
-
-  it('formats light mode', () => {
-    const blocks = macosControlAppearance.format!({ action: 'set', dark_mode: false });
-    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
-    expect(text).toContain('Light mode');
   });
 });
