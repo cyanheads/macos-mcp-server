@@ -8,6 +8,7 @@
  * @module tests/services/permission-probes.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,8 +33,9 @@ vi.mock('node:child_process', () => ({
 import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
 import { initOsascriptService } from '@/services/osascript/osascript-service.js';
 import {
+  type AutomationTarget,
   checkAccessibility,
-  checkAutomationFinder,
+  checkAutomation,
   checkScreenRecording,
   type PermissionCheck,
 } from '@/services/permissions/permission-probes.js';
@@ -89,15 +91,28 @@ const CHECKS = [
   },
   {
     // Asks TCC about every Finder event ('****' is 0x2a2a2a2a) with askUserIfNeeded false.
-    name: 'checkAutomationFinder',
-    check: checkAutomationFinder,
+    name: 'checkAutomation(Finder)',
+    check: (ctx: Context) => checkAutomation('Finder', ctx),
     lines: [
       "ObjC.import('CoreServices');",
       "ObjC.import('Foundation');",
       "ObjC.bindFunction('AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]);",
       'const typeWildCard = 0x2a2a2a2a;',
-      "const finder = $.NSAppleEventDescriptor.descriptorWithBundleIdentifier('com.apple.finder');",
-      'JSON.stringify({ status: $.AEDeterminePermissionToAutomateTarget(finder.aeDesc, typeWildCard, typeWildCard, false) });',
+      "const target = $.NSAppleEventDescriptor.descriptorWithBundleIdentifier('com.apple.finder');",
+      'JSON.stringify({ status: $.AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false) });',
+    ],
+  },
+  {
+    // The same question about Music, by the bundle identifier TCC keys Music on.
+    name: 'checkAutomation(Music)',
+    check: (ctx: Context) => checkAutomation('Music', ctx),
+    lines: [
+      "ObjC.import('CoreServices');",
+      "ObjC.import('Foundation');",
+      "ObjC.bindFunction('AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]);",
+      'const typeWildCard = 0x2a2a2a2a;',
+      "const target = $.NSAppleEventDescriptor.descriptorWithBundleIdentifier('com.apple.Music');",
+      'JSON.stringify({ status: $.AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false) });',
     ],
   },
 ] as const;
@@ -154,22 +169,29 @@ describe.each(CHECKS.slice(0, 2))('$name output', ({ check }) => {
   );
 });
 
-describe('checkAutomationFinder output', () => {
-  const NOT_ASKED: PermissionCheck = {
-    status: 'unknown',
-    reason:
+describe.each<{ app: AutomationTarget; notAsked: string; notRunning: string }>([
+  {
+    app: 'Finder',
+    notAsked:
       'macOS has not asked yet; it asks for consent the first time this host sends Finder an Apple event',
-  };
-  const NOT_RUNNING: PermissionCheck = {
-    status: 'unknown',
-    reason: 'Finder is not running, and macOS answers this check only for a running app',
-  };
-
+    notRunning: 'Finder is not running, and macOS answers this check only for a running app',
+  },
+  {
+    app: 'Music',
+    notAsked:
+      'macOS has not asked yet; it asks for consent the first time this host sends Music an Apple event',
+    notRunning: 'Music is not running, and macOS answers this check only for a running app',
+  },
+])('checkAutomation($app) output', ({ app, notAsked, notRunning }) => {
   const STATUSES: Array<[number, string, PermissionCheck]> = [
     [0, 'noErr', { status: 'granted' }],
     [-1743, 'errAEEventNotPermitted', { status: 'denied' }],
-    [-1744, 'errAEEventWouldRequireUserConsent (not yet asked)', NOT_ASKED],
-    [-600, 'procNotFound (Finder not running)', NOT_RUNNING],
+    [
+      -1744,
+      'errAEEventWouldRequireUserConsent (not yet asked)',
+      { status: 'unknown', reason: notAsked },
+    ],
+    [-600, 'procNotFound (the app is not running)', { status: 'unknown', reason: notRunning }],
     [
       -50,
       'an unrecognized status',
@@ -182,14 +204,14 @@ describe('checkAutomationFinder output', () => {
 
   it.each(STATUSES)('reads %i (%s)', async (status, _label, expected) => {
     prints(JSON.stringify({ status }));
-    await expect(checkAutomationFinder(createMockContext())).resolves.toEqual(expected);
+    await expect(checkAutomation(app, createMockContext())).resolves.toEqual(expected);
   });
 
   it.each(['', '{"status":"0"}', '{"status":1.5}', '{"granted":true}'])(
     'reports output %j as unknown, quoting it',
     async (stdout) => {
       prints(stdout);
-      await expect(checkAutomationFinder(createMockContext())).resolves.toEqual({
+      await expect(checkAutomation(app, createMockContext())).resolves.toEqual({
         status: 'unknown',
         reason: `the check printed unexpected output: ${JSON.stringify(stdout)}`,
       });
@@ -202,7 +224,7 @@ describe('every check', () => {
     prints('{"granted":true}');
     for (const { check } of CHECKS) await check(createMockContext());
     const scripts = execFileMock.mock.calls.map((c) => c[1][3]);
-    expect(scripts).toHaveLength(3);
+    expect(scripts).toHaveLength(4);
     for (const script of scripts) {
       expect(script).not.toMatch(/Application\(|tell application|doShellScript|screencapture/);
       expect(script).not.toMatch(/CGRequestScreenCaptureAccess|AXIsProcessTrustedWithOptions/);

@@ -38,6 +38,7 @@ vi.mock('@/config/server-config.js', () => ({
 
 import { macosControlAppearance } from '@/mcp-server/tools/definitions/macos-control-appearance.tool.js';
 import { macosControlAudio } from '@/mcp-server/tools/definitions/macos-control-audio.tool.js';
+import { macosControlMusic } from '@/mcp-server/tools/definitions/macos-control-music.tool.js';
 import { macosControlVolume } from '@/mcp-server/tools/definitions/macos-control-volume.tool.js';
 import { macosManageApps } from '@/mcp-server/tools/definitions/macos-manage-apps.tool.js';
 import { macosManageDisplays } from '@/mcp-server/tools/definitions/macos-manage-displays.tool.js';
@@ -209,6 +210,15 @@ const MISSING: Array<[AnyTool, string, Record<string, unknown>, string]> = [
   ],
   [macosControlAudio, 'macos_control_audio', { action: 'switch_output' }, 'Provide device.'],
   [macosControlAudio, 'macos_control_audio', { action: 'switch_input' }, 'Provide device.'],
+  [macosControlMusic, 'macos_control_music', { action: 'play_playlist' }, 'Provide playlist.'],
+  [
+    macosControlMusic,
+    'macos_control_music',
+    { action: 'play_playlist', playlist: '' },
+    'playlist: playlist is required for action=play_playlist.',
+  ],
+  [macosControlMusic, 'macos_control_music', { action: 'set_shuffle' }, 'Provide shuffle.'],
+  [macosControlMusic, 'macos_control_music', { action: 'set_repeat' }, 'Provide repeat.'],
   [macosManageFinder, 'macos_manage_finder', { action: 'reveal' }, 'Provide path.'],
   [macosManageFinder, 'macos_manage_finder', { action: 'open_with' }, 'Provide path.'],
   [macosManageFinder, 'macos_manage_finder', { action: 'trash' }, 'Provide path.'],
@@ -352,6 +362,12 @@ describe('inputSchema advertises the per-action requirement', () => {
     [macosManageFinder, 'macos_manage_finder', 'action', ['action', 'path', 'app_name']],
     [macosControlAudio, 'macos_control_audio', 'action', ['action', 'device', 'type']],
     [macosControlVolume, 'macos_control_volume', 'action', ['action', 'level', 'muted']],
+    [
+      macosControlMusic,
+      'macos_control_music',
+      'action',
+      ['action', 'playlist', 'shuffle', 'repeat'],
+    ],
     [macosControlAppearance, 'macos_control_appearance', 'action', ['action', 'mode']],
     [macosManageFocus, 'macos_manage_focus', 'action', ['action', 'mode', 'enabled']],
     [macosManageDisplays, 'macos_manage_displays', 'action', ['action', 'layout_name']],

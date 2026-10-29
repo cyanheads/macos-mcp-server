@@ -12,7 +12,7 @@ export const macosControlAppearance = tool('macos_control_appearance', {
   title: 'Control macOS Appearance',
   description:
     'Get or set the system appearance (dark mode or light mode). The get action returns the current mode. The set action requires mode="dark", "light", or "toggle". Setting "dark" or "light" is idempotent — calling twice produces the same state. "toggle" flips the current mode on each call.',
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       action: z

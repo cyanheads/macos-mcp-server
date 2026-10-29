@@ -7,18 +7,19 @@
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
 | `macos_get_info` | System snapshot: battery, power source, Wi-Fi association and network name, hostname, macOS version, uptime, display count | — | `readOnlyHint: true`, `openWorldHint: false` |
-| `macos_manage_apps` | App lifecycle — list running apps, launch, quit, hide, get frontmost | `action` enum, `app_name?`, `bundle_id?`, `hidden?` | `readOnlyHint` for `list`/`frontmost`; `destructiveHint` for `force_quit` |
-| `macos_manage_windows` | Window operations — list, focus, move/resize, minimize, fullscreen, close | `action` enum, `app_name?`, `window_title?`, bounds params | `readOnlyHint` for `list`; `destructiveHint` for `close` |
-| `macos_control_volume` | Get or set system volume level and mute state | `action: "get" \| "set"`, `level?` (0–100), `muted?` | `readOnlyHint` for `get`; `idempotentHint` for `set` |
-| `macos_control_audio` | Audio device routing — list devices, get current input/output, switch default input or output | `action` enum, `device?`, `type?` | `readOnlyHint` for `list`/`current`; `idempotentHint` for `switch_*` |
-| `macos_control_appearance` | Get or set dark/light mode | `action: "get" \| "set"`, `mode?: "dark" \| "light" \| "toggle"` | `readOnlyHint` for `get`; `idempotentHint` for `set` (not `toggle`) |
-| `macos_control_system` | System-level power controls — lock screen or sleep display | `action: "lock" \| "sleep_display"` | none |
-| `macos_take_screenshot` | Capture the main display, a named app window, one display by `display_index` (the index `macos_manage_displays` `list` reports), or a region. Always saves full-res PNG to disk without replacing an existing file unless `overwrite` is true; optionally returns a JPEG preview as an image content block and as base64. | `target: "screen" \| "window" \| "display" \| "region"`, `app_name?`, `display_index?`, `region?`, `path?`, `overwrite?`, `include_data?` | `readOnlyHint: false`, `openWorldHint: false` |
-| `macos_manage_displays` | List connected displays and their layout; apply a saved display layout by name | `action: "list" \| "apply_layout"`, `layout_name?` | `readOnlyHint` for `list`; `idempotentHint` for `apply_layout` |
-| `macos_send_notification` | Post a macOS notification via Notification Center | `title`, `body?`, `subtitle?`, `sound?` | `idempotentHint: false` |
-| `macos_manage_focus` | Get or set Do Not Disturb / Focus mode (set runs a user-created "Set Focus" shortcut) | `action: "get" \| "set"`, `mode?: string`, `enabled?` | `readOnlyHint` for `get`; `idempotentHint` for `set` |
-| `macos_manage_finder` | Finder integration — get frontmost window path, reveal a path in Finder, open a path with an app, move to Trash | `action` enum, `path?`, `app_name?` | `readOnlyHint` for `frontmost_path`/`get_selection`; `destructiveHint` for `trash` |
-| `macos_check_permissions` | Report which macOS permissions (Accessibility, Screen Recording, Automation > Finder) are granted to the calling process, from prompt-free checks; null with a reason when a check can't tell | — | `readOnlyHint: true`, `openWorldHint: false` |
+| `macos_manage_apps` | App lifecycle — list running apps, launch, quit, hide, get frontmost | `action` enum, `app_name?`, `bundle_id?`, `hidden?` | `destructiveHint: true` (`force_quit`) |
+| `macos_manage_windows` | Window operations — list, focus, move/resize, minimize, fullscreen, close | `action` enum, `app_name?`, `window_title?`, bounds params | `destructiveHint: true` (`close`) |
+| `macos_control_volume` | Get or set system volume level and mute state | `action: "get" \| "set"`, `level?` (0–100), `muted?` | `destructiveHint: false` |
+| `macos_control_audio` | Audio device routing — list devices, get current input/output, switch default input or output | `action` enum, `device?`, `type?` | `destructiveHint: false` |
+| `macos_control_music` | Music app playback — play, pause, stop, next, previous, play a playlist by exact name, set shuffle or repeat, read the current state and track | `action` enum, `playlist?`, `shuffle?`, `repeat?: "off" \| "one" \| "all"` | `destructiveHint: false` |
+| `macos_control_appearance` | Get or set dark/light mode | `action: "get" \| "set"`, `mode?: "dark" \| "light" \| "toggle"` | `destructiveHint: false` |
+| `macos_control_system` | System-level power controls — lock screen or sleep display | `action: "lock" \| "sleep_display"` | `destructiveHint: false` |
+| `macos_take_screenshot` | Capture the main display, a named app window, one display by `display_index` (the index `macos_manage_displays` `list` reports), or a region. Always saves full-res PNG to disk without replacing an existing file unless `overwrite` is true; optionally returns a JPEG preview as an image content block and as base64. | `target: "screen" \| "window" \| "display" \| "region"`, `app_name?`, `display_index?`, `region?`, `path?`, `overwrite?`, `include_data?` | `destructiveHint: true` (`overwrite`) |
+| `macos_manage_displays` | List connected displays and their layout; apply a saved display layout by name | `action: "list" \| "apply_layout"`, `layout_name?` | `destructiveHint: false` |
+| `macos_send_notification` | Post a macOS notification via Notification Center | `title`, `body?`, `subtitle?`, `sound?` | `destructiveHint: false`, `idempotentHint: false` |
+| `macos_manage_focus` | Get or set Do Not Disturb / Focus mode (set runs a user-created "Set Focus" shortcut) | `action: "get" \| "set"`, `mode?: string`, `enabled?` | `destructiveHint: false` |
+| `macos_manage_finder` | Finder integration — get frontmost window path, reveal a path in Finder, open a path with an app, move to Trash | `action` enum, `path?`, `app_name?` | `destructiveHint: true` (`trash`) |
+| `macos_check_permissions` | Report which macOS permissions (Accessibility, Screen Recording, Automation > Finder, Automation > Music) are granted to the calling process, from prompt-free checks; null with a reason when a check can't tell | — | `readOnlyHint: true`, `openWorldHint: false` |
 
 ### Resources
 
@@ -45,6 +46,7 @@ The design constraint is bounded safety: every tool is a specific, named operati
 - Context awareness: "what's in the foreground?", "what's my battery?"
 - System control during a session: mute, DnD on, take a screenshot
 - Audio routing: switch output to headphones when joining a call
+- Music: pause playback, skip tracks, play a playlist, read what is playing
 - Notifications: agent pings user when a long-running task completes
 - Finder integration: reveal a file an agent just created
 
@@ -58,6 +60,7 @@ The design constraint is bounded safety: every tool is a specific, named operati
 - Accessibility permission required for every window operation (list included), and app hide/unhide
 - Screen Recording permission required for window-targeted screenshots
 - Automation > Finder permission required for `frontmost_path`, `get_selection`, and `trash`
+- Automation > Music permission required for every `macos_control_music` action that scripts Music
 - `displayplacer` required for display layout tools (installed via `brew install displayplacer`; found on PATH, in `/opt/homebrew/bin`, or in `/usr/local/bin`)
 - `SwitchAudioSource` required for audio device routing (installed via `brew install switchaudio-osx`; found on PATH, in `/opt/homebrew/bin`, or in `/usr/local/bin`)
 - Focus mode control requires a user-created shortcut named "Set Focus" that reads `{"mode", "enabled"}` JSON input (Get Dictionary from Input → Set Focus action)
@@ -68,7 +71,7 @@ The design constraint is bounded safety: every tool is a specific, named operati
 
 | Service | Wraps | Used By |
 |:--------|:------|:--------|
-| `OsascriptService` | `osascript` JXA/AppleScript runner with permission detection | apps, windows, appearance, notifications, finder, focus, volume |
+| `OsascriptService` | `osascript` JXA/AppleScript runner with permission detection | apps, windows, appearance, notifications, finder, volume, system, music, permission probes |
 | `SystemInfoService` | `pmset`, `networksetup`, `ifconfig`, `sw_vers`, `system_profiler` (JSON), `node:os` | `macos_get_info`, `macos://system/info` |
 | `ScreencaptureService` | `screencapture` + `sips` CLIs (and `osascript` for the window id) | `macos_take_screenshot` |
 | `AudioService` | `SwitchAudioSource` CLI (brew switchaudio-osx) | `macos_control_audio` |
@@ -114,8 +117,8 @@ No API keys or secrets. The server config is minimal by design.
 
 | Operation | Implementation | Permission |
 |:----------|:--------------|:-----------|
-| List running | `System Events` JXA — the process table (one bulk read each of every process's unix id, name, and backgroundOnly flag); each foreground process is then read by name when no other process shares it, else by unix id, so two processes with one name list as two apps | None |
-| Get frontmost | `System Events` — the unix id of the process whose `frontmost` is true; name, bundle id, and first window title read from the process addressed by that id; prints `null` when no process is frontmost (`no_frontmost_app`) | None |
+| List running | `System Events` JXA — the process table (one bulk read each of every process's unix id, name, and backgroundOnly flag); each foreground process is then read by name when no other process shares it, else by unix id, so two processes with one name list as two apps | Automation > System Events |
+| Get frontmost | `System Events` — the unix id of the process whose `frontmost` is true; name, bundle id, and first window title read from the process addressed by that id; prints `null` when no process is frontmost (`no_frontmost_app`) | Automation > System Events |
 | Launch | `open -a <name>` or `open -b <bundleId>`; `-j` for hidden launch | None |
 | Running check (quit, force quit, hide, unhide) | `application "X" is running` — resolves the name as `tell application` does, never launches the app | None |
 | Quit (graceful) | `tell application "X" to quit` via osascript, after the running check | Automation > X |
@@ -168,6 +171,22 @@ The list script rethrows a permission denial (-25211 or "assistive access", -174
 | Set default input | `SwitchAudioSource -s "<name>" -t input` | None |
 
 `SwitchAudioSource` (via `brew install switchaudio-osx`) is looked up on every call: PATH, then `/opt/homebrew/bin`, then `/usr/local/bin`.
+
+### Music
+
+| Operation | Implementation | Permission |
+|:----------|:--------------|:-----------|
+| Running check (every action but `play` and `play_playlist`) | `Application('Music').running()` via JXA — asks Launch Services, sends Music no Apple event, never launches it | None |
+| Play | `music.play()`; launches Music when it is closed | Automation > Music |
+| Play playlist | Lookup first: `playlists.byName(<name>).exists()`, printing the playlist name Music reports or `null` (`playlist_not_found`, nothing played); then `music.play(music.playlists.byName(<name>))`. The first playlist with that exact name plays; launches Music when it is closed | Automation > Music |
+| Pause / stop | `music.pause()` / `music.stop()`; a closed Music is left closed (`running: false`) | Automation > Music |
+| Next / previous | `music.nextTrack()` / `music.previousTrack()`; a closed Music is `not_running` | Automation > Music |
+| Set shuffle / repeat | `music.shuffleEnabled = <bool>` / `music.songRepeat = "off" \| "one" \| "all"`; a closed Music is `not_running` | Automation > Music |
+| Get current | Read only; a closed Music is left closed (`running: false`) | Automation > Music |
+
+Every action is one JXA script: the command, then a state read back, so a write reports the value Music holds. The read-back reads `playerState`, `shuffleEnabled`, and `songRepeat`, then `currentTrack`. Only error -1728 (errAENoSuchObject) on the `currentTrack` read degrades to `track: null`: Music raises it when nothing is loaded, and macOS 26 raises it for a track outside the library (Apple Music radio, catalog playback) while transport commands still work. The result then carries `track_unavailable` when the player is not stopped. Any other error, an Automation denial (-1743) included, is rethrown for `OsascriptService` to classify as `accessibility_required`. An empty `artist` or `album` reads as `null`.
+
+`play` and `play_playlist` run with a 15 s timeout: a cold Music launch, or the first-use Automation consent dialog osascript waits on, can outlast the service's 10 s default. The playlist name enters the script only through `JSON.stringify`.
 
 ### Displays
 
@@ -254,12 +273,13 @@ The permission requirement on step 3 means the window-arrangement workflow is bl
 
 ## Design Decisions
 
-### 6 domains → 13 tools, not 6
+### 6 domains → 14 tools, not 6
 
 The idea doc proposed one tool per domain with an `action` discriminator. After probing, this is mostly right, but a few splits and additions earned their place:
 
 - **`macos_get_info` is separate from `macos_manage_apps`** — system info (battery, wifi, version) has no connection to app lifecycle. One tool per noun.
 - **`macos_control_volume` is separate from audio routing** — volume level and device routing are different concerns, different implementations (osascript vs SwitchAudioSource CLI), and different agent workflows.
+- **`macos_control_music` is separate from `macos_control_audio` and `macos_control_volume`** — it scripts the Music app (transport, playlist, shuffle, repeat, current track) through JXA, while audio routing shells out to SwitchAudioSource and output level belongs to `macos_control_volume`. Catalog search, library queries, playlist editing, AirPlay selection, seeking, and now-playing for other players are out of scope.
 - **`macos_check_permissions` is added** — permission detection is cross-cutting. Rather than baking permission checks into every tool (noisy), a dedicated tool lets an agent pre-flight before attempting window manipulation or screenshot.
 - **`macos_manage_displays` replaces a hypothetical display subsection** — displayplacer is installed and provides display list + layout apply. Display arrangement is a common enough agent task (multi-monitor workspace setup) to justify it.
 - **Clipboard excluded** — a dedicated `clipboard-mcp-server` handles clipboard access with full cross-platform support and rich format awareness (HTML, RTF, images). No need to duplicate here.
@@ -312,7 +332,7 @@ An osascript process that reads `NSScreen.screens` and starts or exits while Sys
 
 ### Upstream and caller text in `content[]` is a code span
 
-Window titles, app and device names, paths, Focus modes, display types, layout names, and notices reach `content[]` through `markdownLiteral()`: each run between line endings as a code span sized past its longest backtick run, each line ending as `&#10;`/`&#13;`. A CommonMark parse then reads every value back exactly as `structuredContent` carries it (U+0000 reads back as U+FFFD, per the spec). Escaping markdown punctuation instead was rejected: the escape set depends on context, and a missed character silently changes the value. Fixed-format displayplacer fields (id, resolution, Hz, origin, rotation, scaling) stay plain text, and `current_config` is a fenced block. Names inside error messages are JSON-quoted (`quotedText()`) instead, so a quote, backslash, or control character shows escaped.
+Window titles, app and device names, paths, Focus modes, Music track, artist, album, and playlist names, display types, layout names, and notices reach `content[]` through `markdownLiteral()`: each run between line endings as a code span sized past its longest backtick run, each line ending as `&#10;`/`&#13;`. A CommonMark parse then reads every value back exactly as `structuredContent` carries it (U+0000 reads back as U+FFFD, per the spec). Escaping markdown punctuation instead was rejected: the escape set depends on context, and a missed character silently changes the value. Fixed-format displayplacer fields (id, resolution, Hz, origin, rotation, scaling) stay plain text, and `current_config` is a fenced block. Names inside error messages are JSON-quoted (`quotedText()`) instead, so a quote, backslash, or control character shows escaped.
 
 ### No `system` mega-tool
 
@@ -322,13 +342,14 @@ The idea doc grouped battery, volume, brightness, appearance, DnD, sleep-display
 - **Appearance** → own tool (one-line osascript, useful standalone)
 - **Screenshot** → own tool (separate service, complex target/destination params)
 - **Focus** → own tool (separate Shortcuts mechanism)
+- **Music** → own tool (`macos_control_music`; scripts the Music app)
 - **System info** (battery, wifi, version) → `macos_get_info`
 - **Lock screen** → `macos_control_system` — see below
 - **Display sleep** → `macos_control_system`
 
 Lock and display-sleep are two actions that don't fit cleanly elsewhere. They're common enough to warrant exposure but too thin for their own tools. **Decision: add `macos_control_system` with `action: "lock" | "sleep_display"`.** This avoids polluting `macos_get_info` with write operations.
 
-Updated tool count: 13.
+Updated tool count: 14.
 
 ---
 
@@ -400,13 +421,14 @@ Every tool gets a test file. All subprocess calls are mocked — no actual syste
 | Tool | Happy paths | Error paths | Edge cases |
 |:-----|:-----------|:------------|:-----------|
 | `macos_get_info` | Returns battery, wifi, hostname, version, uptime | Every probe failing → `battery`/`wifi`/`macos_version`/`display_count` null and named in `unavailable`; desktop → `battery: null`, not in `unavailable` | Associated with the name withheld → `connected: true, ssid: null`; not associated → `connected: false, ssid: null`; Wi-Fi device not `en0` |
-| `macos_check_permissions` | Returns every permission as true/false/null, with `unknown_reasons` for each null | — | Fresh install with no permissions granted; Automation > Finder never asked (null); Finder not running (null) |
+| `macos_check_permissions` | Returns every permission as true/false/null, with `unknown_reasons` for each null | — | Fresh install with no permissions granted; Automation > Finder or Automation > Music never asked (null); Finder or Music not running (null) |
 | `macos_manage_apps` | list returns apps, launch works, quit works | `app_not_found`, `no_frontmost_app`, `not_running`, `accessibility_required` | App with special chars in name, app with no windows, hidden app |
 | `macos_manage_windows` | list returns windows, focus works, move/resize with bounds verification | `window_not_found`, `not_running`, `accessibility_required` (list included), `minimize_unsupported`, `fullscreen_unsupported` | No visible windows, minimized window, app with 10+ windows, window title with unicode |
 | `macos_control_volume` | get returns level+muted, set changes level | Level out of 0–100, or `set` with neither `level` nor `muted` → `invalid_arguments`; `volume_unsupported` | Muted output reads `muted: true`; default output with no software volume (`missing value`): `get` returns `level: null, muted: null, output_device`, `set` fails `volume_unsupported` without sending `set volume` |
 | `macos_control_audio` | list devices, switch output/input | `device_not_found`, `switchaudio_unavailable` | Only one device available, partial name match ambiguity |
+| `macos_control_music` | Every action returns the state read back; each player state (`playing`, `paused`, `stopped`, `fast_forwarding`, `rewinding`) parses; `play_playlist` returns the playlist name Music reports; `set_shuffle` and `set_repeat` return the value read back | `not_running`, `playlist_not_found` (before `play` is called), `accessibility_required`; a missing `playlist`, `shuffle`, or `repeat` → `invalid_arguments` | `get_current`, `pause`, and `stop` on a closed Music → `running: false` with no Apple event sent; empty `artist` or `album` → null; -1728 on `currentTrack` while playing → `track: null` with `track_unavailable`; -1743 rethrown, never read as a missing track |
 | `macos_control_appearance` | get returns mode, set/toggle works | — | Already in requested mode (idempotent — should succeed, not error) |
-| `macos_control_system` | lock, sleep_display succeed | — | — |
+| `macos_control_system` | lock by keystroke (`method: keystroke`) and by the screen-saver fallback (`method: screen_saver`), sleep_display succeed | `accessibility_required` (keystroke denied and ScreenSaverEngine can't start); keystroke `Timeout` and other osascript failures pass through without a fallback | Accessibility (`1002`) and Automation > System Events (`-1743`) denials both fall back; the fallback child is never awaited or killed; a call cancelled before the spawn starts nothing |
 | `macos_take_screenshot` | Main display, region, display by index, preview as image block | `screen_recording_required`, `window_not_found`, `display_not_found`, `path_not_writable`, `path_exists` | Path with spaces, path outside the allowed directories, missing directory, existing file with and without overwrite, very large display (4K+ preview downscale), capture smaller than 1024 px |
 | `macos_manage_displays` | list returns displays with index and layouts | `displayplacer_not_found`, `displayplacer_output_unrecognized`, `layout_not_found`, `layouts_invalid` | Single display, 3+ displays, disabled display (index null), invalid MACOS_DISPLAY_LAYOUTS, truncated listing |
 | `macos_send_notification` | Notification fires | — | Title with special chars, very long body, empty body |
@@ -473,6 +495,7 @@ Gated by `process.platform === 'darwin'` in test setup. Only exercise read-only 
 - **Window capture**: requires Screen Recording permission; CGWindowID-based capture only.
 - **Window access**: every `macos_manage_windows` action, list included, reads windows through System Events and requires Accessibility.
 - **Finder access**: `frontmost_path`, `get_selection`, and `trash` send Apple events to Finder and require Automation > Finder; no Accessibility is needed.
+- **Music access**: every `macos_control_music` action that scripts Music sends it Apple events and requires Automation > Music; the first call from a host macOS hasn't asked yet shows the consent dialog, and a call that times out while it is open succeeds when retried after answering it. On recent macOS, reading `current track` fails with -1728 for tracks outside the library (Apple Music radio, catalog playback) even though transport commands work, so `track` is null with `track_unavailable` there.
 - **Multiple windows per app**: targeting by `app_name` operates on the frontmost window of that app. Use `window_title` for precision when an app has multiple windows.
 - **Spaces/Mission Control**: window operations act on the current space. Moving a window to a different Space is not exposed (requires complex Accessibility + Mission Control interaction).
 - **Audio device routing**: requires `SwitchAudioSource` CLI. Absent on a clean macOS install; user must `brew install switchaudio-osx`.
@@ -531,7 +554,7 @@ The Wi-Fi device is the `networksetup -listallhardwareports` device whose `ifcon
 - Script output for either that is not in the shape above fails as InternalError (-32603).
 - `launch` / `quit` / `force_quit` / `hide` / `show`: `{ success: boolean, app_name: string }`
 
-**Annotations:** `readOnlyHint: true` for `list`/`frontmost`; `destructiveHint: true` for `force_quit`.
+**Annotations:** `readOnlyHint: false`, `destructiveHint: true`, `openWorldHint: false`. MCP annotations describe the whole tool, not one action, so `force_quit` (which discards unsaved work) makes the tool destructive even though `list` and `frontmost` only read.
 
 **Errors:**
 ```ts
@@ -546,8 +569,8 @@ errors: [
     when: 'quit/force_quit/hide/show called on an app that is not running',
     recovery: 'The app is not running. Use action=launch to start it first.' },
   { reason: 'accessibility_required', code: Forbidden,
-    when: 'hide or show called without Accessibility permission',
-    recovery: 'Grant Accessibility permission in System Settings > Privacy & Security > Accessibility for your terminal or MCP host app.' },
+    when: 'An action is denied Accessibility (hide, show) or Automation for the app or System Events it scripts.',
+    recovery: 'Grant the permission the error names (Accessibility, or Automation for the named app) in System Settings > Privacy & Security for your terminal or MCP host app.' },
 ]
 ```
 
@@ -576,7 +599,7 @@ errors: [
 - `list`: `{ windows: Array<{ app, title, x, y, width, height, minimized: boolean | null, fullscreen: boolean | null, display_index: number | null }> }` — `minimized` / `fullscreen` from `AXMinimized` / `AXFullScreen`, `null` when the attribute can't be read; `display_index` is the display the window overlaps most, in `macos_manage_displays` `index` space, `null` when frames can't be read or it overlaps none
 - `focus` and mutating actions: `{ success: boolean, window: { app, title, x, y, width, height, minimized: boolean | null, fullscreen: boolean | null, display_index: number | null } }` — `window` is read back from the same window object after the write; for `minimize` and `fullscreen`, success means the window read back in the requested state; `close` returns `{ success }` with no window
 
-**Annotations:** `readOnlyHint: true` for `list`; `destructiveHint: true` for `close`.
+**Annotations:** `readOnlyHint: false`, `destructiveHint: true` (`close`), `openWorldHint: false`.
 
 **Errors:**
 ```ts
@@ -621,7 +644,7 @@ Note: `get volume settings` in AppleScript returns both `output volume` and `inp
 
 The read-back coerces each field `as text` (`40,false`); joining the raw integer with `&` builds a list (`40, ,, false`). `set` reads the state first, so it runs three osascript calls instead of two.
 
-**Annotations:** `readOnlyHint: true` for `get`; `idempotentHint: true` for `set`.
+**Annotations:** `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: false`.
 
 **Errors:**
 ```ts
@@ -654,7 +677,7 @@ A `level` outside 0–100 is rejected by the input schema as `-32602` `invalid_a
 - `current`: `{ output: { id, name }, input: { id, name } }`
 - `switch_output` / `switch_input`: `{ success: boolean, device: { id, name } }`
 
-**Annotations:** `readOnlyHint: true` for `list`/`current`; `idempotentHint: true` for `switch_*`.
+**Annotations:** `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: false`.
 
 **Errors:**
 ```ts
@@ -667,6 +690,57 @@ errors: [
     recovery: 'Install with: brew install switchaudio-osx' },
 ]
 ```
+
+---
+
+### `macos_control_music`
+
+**Description:** Control playback in the Music app and read what it is playing: play, pause, stop, skip to the next or previous track, play a playlist by its exact name, set shuffle or repeat, or get the current state. Every action returns the state Music reports afterward — player state, current track, shuffle, and repeat. `play` and `play_playlist` launch Music when it is closed; `get_current`, `pause`, and `stop` leave it closed and report `running=false`; `next`, `previous`, `set_shuffle`, and `set_repeat` fail with `not_running`. `track` is null when Music has nothing loaded, and also, with `track_unavailable` saying why, when Music refuses to name a track outside the library (radio or catalog playback on recent macOS). The first call shows macOS's Automation consent dialog for Music; if the call times out while it is open, answer the dialog and retry. `macos_check_permissions` reports the grant as `automation_music`. System output level belongs to `macos_control_volume`.
+
+**Input:**
+```ts
+{
+  action: z.enum(['play', 'pause', 'stop', 'next', 'previous', 'play_playlist', 'set_shuffle', 'set_repeat', 'get_current']),
+  playlist?: string,                       // exact Music sidebar name; required for play_playlist; the first match plays
+  shuffle?: boolean,                       // required for set_shuffle
+  repeat?: z.enum(['off', 'one', 'all']),  // required for set_repeat
+}
+```
+
+A missing `playlist`, `shuffle`, or `repeat` is rejected by the input schema as `-32602` `invalid_arguments` (`withActionRequirements`).
+
+**Output:**
+```ts
+{
+  action: string,
+  running: boolean,   // false only for get_current, pause, and stop on a closed Music
+  player_state: 'playing' | 'paused' | 'stopped' | 'fast_forwarding' | 'rewinding' | null,  // null exactly when running is false
+  track: { name: string, artist: string | null, album: string | null } | null,
+  track_unavailable?: string,  // present when the player is not stopped but Music would not return the track
+  shuffle: boolean | null,     // null exactly when running is false
+  repeat: 'off' | 'one' | 'all' | null,  // null exactly when running is false
+  playlist?: string,           // play_playlist: the name as Music reports it
+}
+```
+
+**Annotations:** `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: false`.
+
+**Errors:**
+```ts
+errors: [
+  { reason: 'not_running', code: NotFound,
+    when: 'next, previous, set_shuffle, or set_repeat is called while Music is not running.',
+    recovery: 'Music is not running. Start playback with action=play or action=play_playlist, which launch it, then retry.' },
+  { reason: 'playlist_not_found', code: NotFound,
+    when: 'play_playlist names a playlist Music does not have.',
+    recovery: 'Check the playlist name against the Music sidebar and retry with its exact name; nothing was played.' },
+  { reason: 'accessibility_required', code: Forbidden, thrownBy: 'service',
+    when: 'The host app is denied Automation > Music permission.',
+    recovery: 'Grant Automation > Music permission in System Settings > Privacy & Security > Automation for your terminal or MCP host app.' },
+]
+```
+
+**Implementation:** see Domain Mapping > Music. The script, state schema, and `track_unavailable` text live in `src/mcp-server/tools/definitions/macos-control-music.tool.ts`.
 
 ---
 
@@ -684,7 +758,7 @@ errors: [
 
 **Output:** `{ dark_mode: boolean }`
 
-**Annotations:** `readOnlyHint: true` for `get`; `idempotentHint: true` for `set` with `mode: "dark"` or `mode: "light"` (calling twice produces the same state); `idempotentHint: false` for `mode: "toggle"` (each call flips state).
+**Annotations:** `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: false`. No `idempotentHint`: `mode: "toggle"` flips state on each call.
 
 ---
 
@@ -699,12 +773,13 @@ errors: [
 }
 ```
 
-**Output:** `{ success: boolean, action: string }`
+**Output:** `{ success: boolean, action: string, method?: "keystroke" | "screen_saver" }` — `method` is present for `lock` only, so `sleep_display`'s output is unchanged (an MCP `outputSchema` must be a root object, which rules out a per-action union).
 
 **Annotations:** `destructiveHint: false` (neither is data-destructive; both are user-reversible).
 
 **Implementation notes:**
-- `lock`: `pmset sleepnow` causes full system sleep, not just a lock. `open -a ScreenSaverEngine` was removed in macOS 14 (Sonoma). The reliable cross-version approach: `osascript -e 'tell application "System Events" to keystroke "q" using {command down, control down}'` via `execFile` (requires Accessibility), which triggers the ⌃⌘Q lock shortcut. Fallback when Accessibility is not granted: run `/System/Library/CoreServices/ScreenSaverEngine.app/Contents/MacOS/ScreenSaverEngine` directly (binary still exists through macOS 15; verify on macOS 26). If Accessibility is missing and the binary path fails, surface a structured error rather than silently no-oping. A cancelled call never falls through to the ScreenSaverEngine fallback.
+- `lock`: `pmset sleepnow` causes full system sleep, not just a lock. The primary path is `osascript -e 'tell application "System Events" to keystroke "q" using {command down, control down}'`, which triggers the ⌃⌘Q lock shortcut and needs Accessibility and Automation > System Events. Only a permission denial (`isPermissionDenial`: assistive access, `not allowed to send keystrokes. (1002)`, or `-1743`) falls back. A keystroke `Timeout` stays a `Timeout`, since the late Apple event may still lock and a fallback would double-trigger, and any other failure keeps its `osascript failed: …` error.
+- The fallback spawns `/System/Library/CoreServices/ScreenSaverEngine.app/Contents/MacOS/ScreenSaverEngine` (`SYSTEM_BINARIES.ScreenSaverEngine`, present on macOS 27.0.1) detached, with `stdio: 'ignore'`, `unref()`, and no timeout or signal, and returns once the child emits `spawn`. ScreenSaverEngine is an `NSApplication` that runs until dismissed, so awaiting it or killing it on a timeout would end the screen saver it just started. It runs by absolute path, not `open -a ScreenSaverEngine`, which looks the app up by name through LaunchServices. A started screen saver locks the session only when "Require password after screen saver begins or display is turned off" is set to Immediately (System Settings > Lock Screen), so the output reports `method`. A spawn `error` (`ENOENT`, `EACCES`) fails as `accessibility_required` (`Forbidden`), carrying the error code and the denied pane's hint but never the command line. A cancelled call never reaches the spawn.
 - `sleep_display`: `pmset displaysleepnow` confirmed working.
 
 ---
@@ -741,7 +816,7 @@ errors: [
 
 The full-res file is always written. The preview is a compressed version suitable for agent analysis — 57–465 KB of base64 per copy regardless of display resolution, and a capture smaller than 1024 px keeps its own size. Agents that need pixel-perfect detail can read the full file separately.
 
-**Annotations:** `readOnlyHint: false`, `openWorldHint: false` (`destructiveHint` left at its default, true: `overwrite` replaces a file).
+**Annotations:** `readOnlyHint: false`, `destructiveHint: true` (`overwrite` replaces a file), `openWorldHint: false`.
 
 **Errors:**
 ```ts
@@ -788,7 +863,7 @@ A path not ending in .png, holding U+0000, or whose file name or full resolved p
 
 `index` is the display's 0-based position in `NSScreen.screens`, joined from displayplacer's `Contextual screen id` to `NSScreenNumber` (both the CGDirectDisplayID); it is the `display_index` of `macos_take_screenshot` and `macos_manage_windows`. The NSScreen read is a JXA `ObjC.import('AppKit')` script in its own osascript process, run concurrently with `displayplacer list`; it is best effort — a failure omits `index` and sets `notice`, while the caller's cancellation is rethrown. displayplacer's list position is not used: it enumerates online displays (CGGetOnlineDisplayList), which include inactive ones.
 
-**Annotations:** `readOnlyHint: true` for `list`; `idempotentHint: true` for `apply_layout`.
+**Annotations:** `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: false`.
 
 **Errors:**
 ```ts
@@ -828,7 +903,7 @@ Note: `apply_layout` requires pre-configured layout strings (displayplacer CLI a
 
 **Output:** `{ success: boolean }`
 
-**Annotations:** `idempotentHint: false` (each call creates a new notification).
+**Annotations:** `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: false`, `idempotentHint: false` (each call creates a new notification).
 
 ---
 
@@ -849,7 +924,7 @@ Note: `apply_layout` requires pre-configured layout strings (displayplacer CLI a
 - `get`: `{ status: "active" | "inactive" | "unknown", mode: string | null, reason?: string }`
 - `set`: `{ action, success: boolean, mode: string, enabled: boolean }` — `mode` and `enabled` are the requested values; `success` means the shortcut finished without error
 
-**Annotations:** `readOnlyHint: true` for `get`.
+**Annotations:** `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: false`.
 
 **Errors:**
 ```ts
@@ -885,7 +960,7 @@ errors: [
 - `get_selection`: `{ paths: string[], count: number }`. Script output that is not a JSON list of strings fails as InternalError (-32603).
 - `reveal`, `open_with`, `trash`: `{ success: boolean, path: string }`
 
-**Annotations:** `readOnlyHint: true` for `frontmost_path`/`get_selection`; `destructiveHint: true` for `trash`.
+**Annotations:** `readOnlyHint: false`, `destructiveHint: true` (`trash`), `openWorldHint: false`.
 
 **Errors:**
 ```ts
@@ -912,7 +987,7 @@ errors: [
 
 ### `macos_check_permissions`
 
-**Description:** Reports which macOS permissions this server relies on are granted to the calling process, read from Apple's prompt-free checks: Accessibility (every macos_manage_windows action, list included; macos_manage_apps hide and show, and the window_title frontmost reads; the ⌃⌘Q keystroke macos_control_system lock sends before it falls back to the screen saver), Screen Recording (window screenshots), and Automation > Finder (macos_manage_finder frontmost_path, get_selection, and trash). No check sends an Apple event to another app, captures the screen, or can show a permission prompt. Each field is true when granted, false when not, and null when the check cannot tell, with the reason in `unknown_reasons`: Automation > Finder reads null until macOS has asked for consent and while Finder is not running. Notifications is always null, since macOS offers no prompt-free check for it. Call this before operations that need these permissions.
+**Description:** Reports which macOS permissions this server relies on are granted to the calling process, read from Apple's prompt-free checks: Accessibility (every macos_manage_windows action, list included; macos_manage_apps hide and show, and the window_title frontmost reads; the ⌃⌘Q keystroke macos_control_system lock sends before it falls back to the screen saver), Screen Recording (window screenshots), Automation > Finder (macos_manage_finder frontmost_path, get_selection, and trash), and Automation > Music (macos_control_music). No check sends an Apple event to another app, captures the screen, or can show a permission prompt. Each field is true when granted, false when not, and null when the check cannot tell, with the reason in `unknown_reasons`: Automation > Finder and Automation > Music read null until macOS has asked for consent and while that app is not running. Notifications is always null, since macOS offers no prompt-free check for it. Call this before operations that need these permissions.
 
 **Input:** none
 
@@ -922,11 +997,13 @@ errors: [
   accessibility: boolean | null,      // false = not granted (denied or never asked)
   screen_recording: boolean | null,   // false = not granted (denied or never asked)
   automation_finder: boolean | null,  // false = denied (-1743); null = not yet asked (-1744), Finder not running (-600), or probe failed
+  automation_music: boolean | null,   // same statuses as automation_finder, for Music
   notifications: boolean | null,      // always null
   unknown_reasons: {                  // a key is present exactly when its field is null
     accessibility?: string,
     screen_recording?: string,
     automation_finder?: string,
+    automation_music?: string,
     notifications?: string,           // always present
   },
   calling_process: string,  // e.g. "ghostty"
@@ -940,25 +1017,27 @@ errors: [
 - **Accessibility**: `AXIsProcessTrusted()` (never prompts; the prompting form is `AXIsProcessTrustedWithOptions`).
 - **Screen Recording**: `CGPreflightScreenCaptureAccess()` (never prompts; the prompting form is `CGRequestScreenCaptureAccess`). Captures nothing.
 - **Automation > Finder**: `AEDeterminePermissionToAutomateTarget(<typeApplicationBundleID "com.apple.finder">, typeWildCard, typeWildCard, askUserIfNeeded: false)` — asks TCC without sending Finder an event. `0` → true, `-1743` errAEEventNotPermitted → false, `-1744` errAEEventWouldRequireUserConsent → null (not yet asked), `-600` procNotFound → null (Finder not running), any other status → null.
+- **Automation > Music**: the same probe with the target `com.apple.Music` (`checkAutomation(app, ctx)` takes the app and its bundle id). `-600` procNotFound → null (Music not running); the probe never launches Music.
 - **Notifications**: no prompt-free check exists; always null.
 - A failed, timed-out, or malformed probe reads null with its reason on both surfaces; a cancelled request, during a probe or the calling-process lookup, settles as cancelled (never `calling_process: "unknown"`).
 
 ---
 
-## Updated Tool Surface (13 tools)
+## Updated Tool Surface (14 tools)
 
 | # | Tool | Domain | Permission |
 |:--|:-----|:-------|:-----------|
 | 1 | `macos_get_info` | System info | None |
 | 2 | `macos_check_permissions` | Permissions | None |
-| 3 | `macos_manage_apps` | App lifecycle | None (Accessibility for hide/show) |
-| 4 | `macos_manage_windows` | Windows | Accessibility (every action) |
+| 3 | `macos_manage_apps` | App lifecycle | Automation > System Events for every action but launch and quit; Accessibility for hide/show; Automation for the app quit targets |
+| 4 | `macos_manage_windows` | Windows | Accessibility and Automation > System Events (every action) |
 | 5 | `macos_control_volume` | Volume | None |
 | 6 | `macos_control_audio` | Audio routing | None (SwitchAudioSource required) |
-| 7 | `macos_control_appearance` | Appearance | None |
-| 8 | `macos_control_system` | Lock/sleep | None (Accessibility for lock via keystroke; ScreenSaverEngine binary fallback) |
+| 7 | `macos_control_appearance` | Appearance | Automation > System Events |
+| 8 | `macos_control_system` | Lock/sleep | Accessibility and Automation > System Events for the lock keystroke (a denial falls back to ScreenSaverEngine); none for sleep_display |
 | 9 | `macos_take_screenshot` | Screenshot | None; Screen Recording for window |
 | 10 | `macos_manage_displays` | Displays | None (displayplacer required) |
 | 11 | `macos_send_notification` | Notifications | None |
 | 12 | `macos_manage_focus` | Focus/DnD | None (set needs a user-created "Set Focus" shortcut) |
 | 13 | `macos_manage_finder` | Finder | None for reveal/open_with; Automation > Finder for frontmost_path, get_selection, and trash |
+| 14 | `macos_control_music` | Music playback | Automation > Music (a closed Music is not scripted by get_current, pause, or stop) |

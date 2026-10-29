@@ -50,14 +50,16 @@ const AUTOMATION_DENIALS = [
 ];
 
 /**
- * Stderr fragments macOS prints when Accessibility (assistive access) is denied.
- * Matched by text, plus `-25211` (kAXErrorAPIDisabled), the one number that is a
- * denial on its own. A bare `-1719` is also errAEIllegalIndex ("Invalid index",
- * e.g. Finder with no window open) and `-25212` is kAXErrorNoValue, so neither
- * number alone is a denial.
+ * Stderr fragments macOS prints when Accessibility (assistive access) is denied,
+ * including the `not allowed to send keystrokes. (1002)` a System Events
+ * `keystroke` raises. Matched by text, plus `-25211` (kAXErrorAPIDisabled), the
+ * one number that is a denial on its own. A bare `-1719` is also
+ * errAEIllegalIndex ("Invalid index", e.g. Finder with no window open) and
+ * `-25212` is kAXErrorNoValue, so neither number alone is a denial.
  */
 const ACCESSIBILITY_DENIALS = [
   'not allowed assistive access',
+  'not allowed to send keystrokes',
   'Assistive access is not',
   'Access for assistive devices',
   'Application is not permitted',

@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/macos-mcp-server</h1>
-  <p><b>Control macOS system settings, apps, windows, audio, displays, screenshots, and Focus mode via MCP. STDIO or Streamable HTTP.</b>
-  <div>13 Tools • 3 Resources</div>
+  <p><b>Control macOS settings, apps, windows, audio, Music, displays, screenshots, and Focus mode via MCP. STDIO or Streamable HTTP.</b>
+  <div>14 Tools • 3 Resources</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/macos-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/macos-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/macos-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/macos-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -25,18 +25,19 @@
 
 ## Overview
 
-Control your Mac from an agent: launch, quit, and arrange apps and windows, switch audio and display devices, capture screenshots, work with Finder, send notifications, and toggle Focus mode.
+Control your Mac from an agent: launch, quit, and arrange apps and windows, switch audio and display devices, control Music playback, capture screenshots, work with Finder, send notifications, and toggle Focus mode.
 
 ### Tools
 
 | Tool | Description |
 |:-----|:------------|
 | `macos_get_info` | System snapshot: battery level and charging status, power source, Wi-Fi association and network name, hostname, macOS version, uptime, and display count; a failed probe leaves its field null and named in `unavailable` |
-| `macos_check_permissions` | Reports Accessibility, Screen Recording, and Automation > Finder status for the calling process from Apple's prompt-free checks — null with a reason when a check can't tell |
+| `macos_check_permissions` | Reports Accessibility, Screen Recording, Automation > Finder, and Automation > Music status for the calling process from Apple's prompt-free checks — null with a reason when a check can't tell |
 | `macos_manage_apps` | List running apps, get the frontmost app, launch, quit, force-quit, hide, or show applications |
 | `macos_manage_windows` | List, focus, move, resize, move_resize, minimize, fullscreen, or close windows across all visible apps |
 | `macos_control_volume` | Get or set system output volume (0–100) and mute state |
 | `macos_control_audio` | List audio devices, get current defaults, or switch the default input/output device |
+| `macos_control_music` | Play, pause, stop, skip, play a playlist by name, set shuffle or repeat, or read what the Music app is playing |
 | `macos_control_appearance` | Get or set dark/light mode |
 | `macos_control_system` | Lock the screen or put the display to sleep |
 | `macos_take_screenshot` | Capture the main display, one display by `display_index`, a named app window, or a pixel region; saves a PNG without replacing existing files unless `overwrite` is true, optional JPEG preview |
@@ -70,8 +71,8 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos_check_permissions` <sub>tool</sub>
 
-- Reports **Accessibility** (every `macos_manage_windows` action, `list` included; `macos_manage_apps` `hide` and `show`, and the `window_title` `frontmost` reads; the ⌃⌘Q keystroke `macos_control_system` `lock` sends before it falls back to the screen saver), **Screen Recording** (window screenshots), and **Automation > Finder** (`macos_manage_finder` `frontmost_path`, `get_selection`, and `trash`) from Apple's prompt-free checks: `AXIsProcessTrusted`, `CGPreflightScreenCaptureAccess`, and `AEDeterminePermissionToAutomateTarget` with prompting off
-- Each field is `true`, `false`, or `null` when the check can't tell; `unknown_reasons` names why each `null` is unknown. Automation > Finder reads `null` until macOS has asked for consent and while Finder isn't running. **Notifications** is always `null`: macOS has no prompt-free check for it
+- Reports **Accessibility** (every `macos_manage_windows` action, `list` included; `macos_manage_apps` `hide` and `show`, and the `window_title` `frontmost` reads; the ⌃⌘Q keystroke `macos_control_system` `lock` sends before it falls back to the screen saver), **Screen Recording** (window screenshots), **Automation > Finder** (`macos_manage_finder` `frontmost_path`, `get_selection`, and `trash`), and **Automation > Music** (`macos_control_music`) from Apple's prompt-free checks: `AXIsProcessTrusted`, `CGPreflightScreenCaptureAccess`, and `AEDeterminePermissionToAutomateTarget` with prompting off
+- Each field is `true`, `false`, or `null` when the check can't tell; `unknown_reasons` names why each `null` is unknown. Automation > Finder and Automation > Music read `null` until macOS has asked for consent and while that app isn't running. **Notifications** is always `null`: macOS has no prompt-free check for it
 - Returns the calling process name (e.g. `"ghostty"`, `"node"`) so you know which process to grant permissions for
 - Read-only — no check sends an Apple event to another app, captures the screen, or can show a permission prompt
 - Run this first when debugging why another tool is failing
@@ -123,6 +124,21 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ---
 
+### `macos_control_music` <sub>tool</sub>
+
+- `play` resumes or starts playback; `play_playlist` plays the playlist named by `playlist` (exact name as the Music sidebar shows it; the first match plays). Both launch Music when it is closed
+- `pause` and `stop` halt playback; `next` and `previous` skip tracks
+- `set_shuffle` requires `shuffle` (boolean); `set_repeat` requires `repeat` (`off`, `one`, or `all`)
+- `get_current` only reads
+- Every action returns the state Music reports afterward: `player_state` (`playing`, `paused`, `stopped`, `fast_forwarding`, `rewinding`), `track` (`name`, `artist`, `album`), `shuffle`, and `repeat`; `play_playlist` also returns `playlist`, the name as Music reports it
+- `get_current`, `pause`, and `stop` leave a closed Music closed and return `running: false` with `player_state`, `shuffle`, and `repeat` null; `next`, `previous`, `set_shuffle`, and `set_repeat` fail with `not_running`
+- `track` is `null` when Music has nothing loaded. It is also `null`, with `track_unavailable` saying why, when the player is not stopped but Music refuses to return a track outside the library (Apple Music radio or catalog playback on recent macOS); transport actions still work
+- Scripts Music and requires Automation > Music; the first call shows the macOS consent dialog, and a call that times out while it is open succeeds when retried after answering it
+- Typed errors: `not_running`, `playlist_not_found` (nothing was played), `accessibility_required` (Automation > Music denied)
+- System output level belongs to `macos_control_volume`
+
+---
+
 ### `macos_control_appearance` <sub>tool</sub>
 
 - `get` — returns `dark_mode: true/false`, with the `action` echoed
@@ -133,7 +149,8 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos_control_system` <sub>tool</sub>
 
-- `lock` — ⌃⌘Q via Accessibility; falls back to the ScreenSaverEngine binary when Accessibility isn't granted (a cancelled call never falls back)
+- `lock` — sends ⌃⌘Q through System Events (needs Accessibility and Automation > System Events). When either is denied, it starts the screen saver instead, which locks the session only when "Require password after screen saver begins or display is turned off" is set to Immediately in System Settings > Lock Screen; `method` reports `keystroke` or `screen_saver`. A timed-out or otherwise failed keystroke is reported as-is, and a cancelled call never falls back
+- Typed error `accessibility_required` when the keystroke is denied and the screen saver can't start, with the hint for the pane that was denied
 - `sleep_display` — `pmset displaysleepnow`; no permissions required
 - Both operations are immediate and reversible with any input (wake/unlock)
 
@@ -290,9 +307,11 @@ Some tools require macOS permissions granted to the terminal or MCP host app:
 
 | Permission | Required by |
 |:-----------|:------------|
-| Accessibility | `macos_manage_windows` (every action, `list` included), `macos_manage_apps` (hide/show; `frontmost` reads `window_title` with it), `macos_control_system` (lock keystroke; falls back to the screen saver without it) |
+| Accessibility | `macos_manage_windows` (every action, `list` included), `macos_manage_apps` (hide/show; `frontmost` reads `window_title` with it), `macos_control_system` (lock keystroke; without it, lock starts the screen saver, which locks only when a password is required immediately) |
+| Automation > System Events | `macos_manage_windows`, `macos_manage_apps` (every action but `launch` and `quit`), `macos_control_appearance`, `macos_control_system` (lock keystroke; same screen-saver fallback); `macos_check_permissions` cannot report it |
 | Screen Recording | `macos_take_screenshot` with `target=window` |
 | Automation > Finder | `macos_manage_finder` with `action=frontmost_path`, `get_selection`, or `trash` |
+| Automation > Music | `macos_control_music` (every action; `get_current`, `pause`, and `stop` on a closed Music script nothing) |
 
 Use `macos_check_permissions` to check current status before running permission-gated operations.
 
@@ -373,13 +392,13 @@ bun run lint:mcp   # Validate MCP definitions against spec
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry — registers tools/resources and inits services |
 | `src/config/server-config.ts` | `MACOS_SCREENSHOT_DIR` and `MACOS_DISPLAY_LAYOUTS` env parsing |
-| `src/mcp-server/tools/definitions/` | 13 tool definitions (`macos-*.tool.ts`) |
+| `src/mcp-server/tools/definitions/` | 14 tool definitions (`macos-*.tool.ts`) |
 | `src/mcp-server/tools/action-requirements.ts` | Per-action argument requirements — enforced by the input schema and advertised in `inputSchema` |
 | `src/mcp-server/resources/definitions/` | 3 resource definitions (`macos-*.resource.ts`) |
 | `src/services/osascript/` | osascript JXA + AppleScript runner with configurable timeout and permission-denial classification, AppleScript string literals for caller text, and the running-app name resolver |
 | `src/utils/exec-failure.ts` | Caller-safe error text for a failed CLI call (never the command line) |
 | `src/services/binaries/binary-paths.ts` | Absolute paths of the macOS system binaries, and the per-call PATH + Homebrew lookup for displayplacer and SwitchAudioSource |
-| `src/services/permissions/` | Prompt-free Accessibility, Screen Recording, and Automation > Finder checks |
+| `src/services/permissions/` | Prompt-free Accessibility, Screen Recording, Automation > Finder, and Automation > Music checks |
 | `src/services/audio/` | SwitchAudioSource device listing and switching |
 | `src/services/display/` | displayplacer list and apply-layout, plus the JXA NSScreen read that gives each display its index |
 | `src/services/screencapture/` | screencapture PNG capture, path checks and no-replace placement, sips JPEG preview |

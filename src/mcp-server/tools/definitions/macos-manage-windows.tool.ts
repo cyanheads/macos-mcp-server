@@ -86,7 +86,7 @@ export const macosManageWindows = tool('macos_manage_windows', {
   title: 'Manage macOS Windows',
   description:
     "Window operations across all visible apps: list all windows with their bounds and state, focus a window, move or resize a window, minimize/restore, enter or exit fullscreen, or close. Every action, list included, scripts System Events and requires Accessibility. Every action except list targets one window: the one titled window_title, or app_name's frontmost window (window_title takes precedence when both are given). Focus raises the window and brings its app forward, as fullscreen does before it changes a window; no action launches an app.",
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       action: z

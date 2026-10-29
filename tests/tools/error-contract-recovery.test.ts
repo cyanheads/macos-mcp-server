@@ -53,10 +53,14 @@ type ExecFileMock = (
   cb: (err: NodeJS.ErrnoException | null, result?: { stdout: string; stderr: string }) => void,
 ) => unknown;
 
-const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn<ExecFileMock>() }));
+const { execFileMock, spawnMock } = vi.hoisted(() => ({
+  execFileMock: vi.fn<ExecFileMock>(),
+  spawnMock: vi.fn(),
+}));
 
 vi.mock('node:child_process', () => ({
   execFile: execFileMock,
+  spawn: spawnMock,
 }));
 
 /** Whether a location has displayplacer or SwitchAudioSource is each test's to say. */
@@ -68,6 +72,8 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
 import { getServerConfig } from '@/config/server-config.js';
 import { macosControlAppearance } from '@/mcp-server/tools/definitions/macos-control-appearance.tool.js';
 import { macosControlAudio } from '@/mcp-server/tools/definitions/macos-control-audio.tool.js';
+import { macosControlMusic } from '@/mcp-server/tools/definitions/macos-control-music.tool.js';
+import { macosControlSystem } from '@/mcp-server/tools/definitions/macos-control-system.tool.js';
 import { macosControlVolume } from '@/mcp-server/tools/definitions/macos-control-volume.tool.js';
 import { macosManageApps } from '@/mcp-server/tools/definitions/macos-manage-apps.tool.js';
 import { macosManageDisplays } from '@/mcp-server/tools/definitions/macos-manage-displays.tool.js';
@@ -840,6 +846,40 @@ describe('error contract — macos_manage_focus', () => {
   });
 });
 
+describe('error contract — macos_control_system', () => {
+  it('lock forwards accessibility_required and the Accessibility hint when the keystroke is denied and ScreenSaverEngine cannot start', async () => {
+    const keystrokesDenied =
+      'execution error: System Events got an error: osascript is not allowed to send keystrokes. (1002)';
+    fakeExec((cmd) => (cmd === SYSTEM_BINARIES.osascript ? { stderr: keystrokesDenied } : ''));
+    // The spawned child reports Node's ENOENT `error` event on the next tick.
+    const enoent = Object.assign(new Error(`spawn ${SYSTEM_BINARIES.ScreenSaverEngine} ENOENT`), {
+      code: 'ENOENT',
+      errno: -2,
+      syscall: `spawn ${SYSTEM_BINARIES.ScreenSaverEngine}`,
+      path: SYSTEM_BINARIES.ScreenSaverEngine,
+    });
+    spawnMock.mockReset().mockImplementation(() => ({
+      once(event: string, listener: (err: Error) => void) {
+        if (event === 'error') process.nextTick(listener, enoent);
+        return this;
+      },
+      unref() {},
+    }));
+    const result = await runToolContract(macosControlSystem, { action: 'lock' });
+    expectFailure(result, {
+      code: -32005,
+      reason: 'accessibility_required',
+      hint: ACCESSIBILITY_HINT,
+      message: `Accessibility permission denied: ${keystrokesDenied}; the ScreenSaverEngine fallback could not start (ENOENT).`,
+    });
+    expectNoCommandLine(result);
+    expect(JSON.stringify(result)).not.toContain(`spawn ${SYSTEM_BINARIES.ScreenSaverEngine}`);
+    expect(spawnMock.mock.calls).toEqual([
+      [SYSTEM_BINARIES.ScreenSaverEngine, [], { detached: true, stdio: 'ignore' }],
+    ]);
+  });
+});
+
 describe('error contract — macos_control_volume', () => {
   it('set on an output with no software volume forwards volume_unsupported recovery, names the device, and sets nothing', async () => {
     const profile = {
@@ -871,6 +911,47 @@ describe('error contract — macos_control_volume', () => {
       ],
       [SYSTEM_BINARIES.system_profiler, ['SPAudioDataType', '-json']],
     ]);
+  });
+});
+
+describe('error contract — macos_control_music', () => {
+  /** Real JXA stderr for an Automation > Music denial. */
+  const AUTOMATION_DENIED_MUSIC =
+    'execution error: Error: Error: Not authorized to send Apple events to Music. (-1743)';
+
+  it('next with Music closed forwards not_running recovery after the one guarded script', async () => {
+    fakeExec(() => '{"running":false}');
+    const result = await runToolContract(macosControlMusic, { action: 'next' });
+    expectFailure(result, {
+      ...declared(macosControlMusic, 'not_running', -32001),
+      message: 'Music is not running, so next has nothing to act on.',
+    });
+    expect(osascriptScripts()).toHaveLength(1);
+  });
+
+  it('play_playlist naming no playlist forwards playlist_not_found recovery, before any play', async () => {
+    fakeExec(() => 'null');
+    const result = await runToolContract(macosControlMusic, {
+      action: 'play_playlist',
+      playlist: 'ZzNoSuchPlaylist',
+    });
+    expectFailure(result, {
+      ...declared(macosControlMusic, 'playlist_not_found', -32001),
+      message: 'Music has no playlist named "ZzNoSuchPlaylist".',
+    });
+    expect(osascriptScripts()).toHaveLength(1);
+    expect(osascriptScripts()[0]).not.toContain('.play(');
+  });
+
+  it('get_current on an Automation > Music denial (-1743) forwards the service’s accessibility_required', async () => {
+    fakeExec(() => ({ stderr: AUTOMATION_DENIED_MUSIC }));
+    const result = await runToolContract(macosControlMusic, { action: 'get_current' });
+    expectFailure(result, {
+      code: -32005,
+      reason: 'accessibility_required',
+      hint: declaredRecovery(macosControlMusic, 'accessibility_required'),
+      message: `Automation permission denied for Music: ${AUTOMATION_DENIED_MUSIC}`,
+    });
   });
 });
 

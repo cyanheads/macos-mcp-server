@@ -11,7 +11,12 @@ export const macosSendNotification = tool('macos_send_notification', {
   title: 'Send macOS Notification',
   description:
     "Post a notification to macOS Notification Center via osascript. The notification is delivered immediately and follows the calling process's notification settings, and an active Focus such as Do Not Disturb silences it unless that Focus allows the posting app. Title is required; body, subtitle, and sound are optional. Each call creates a new notification (not idempotent).",
-  annotations: { readOnlyHint: false, openWorldHint: false, idempotentHint: false },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+    idempotentHint: false,
+  },
   input: z.object({
     title: z.string().min(1).describe('Notification title (required).'),
     body: z.string().optional().describe('Notification body text.'),

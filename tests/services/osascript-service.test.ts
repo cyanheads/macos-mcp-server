@@ -4,7 +4,8 @@
  *
  * The stderr fixtures are the strings osascript actually prints: the sandbox
  * noise and `-10010` line from Finder refusing a nonexistent path, a JXA
- * `throw`, and the Accessibility (`-25211`) and Automation (`-1743`) denials.
+ * `throw`, and the Accessibility (`-25211`, keystroke `1002`) and Automation
+ * (`-1743`) denials.
  * @module tests/services/osascript-service.test
  */
 
@@ -51,6 +52,9 @@ const FINDER_INVALID_INDEX =
 /** The Accessibility denial that carries the same number. */
 const ACCESSIBILITY_DENIED_1719 =
   'execution error: System Events got an error: osascript is not allowed assistive access. (-1719)';
+/** A System Events `keystroke` with Accessibility denied. */
+const KEYSTROKES_DENIED =
+  'execution error: System Events got an error: osascript is not allowed to send keystrokes. (1002)';
 /** `-25212` is kAXErrorNoValue — an attribute with no value, not a denial. */
 const AX_NO_VALUE =
   'execution error: System Events got an error: Can’t get value of attribute "AXFocusedWindow" of process "Finder". (-25212)';
@@ -119,6 +123,12 @@ const DENIALS: Array<[string, string, string, string]> = [
     'an assistive-access denial that carries -1719',
     ACCESSIBILITY_DENIED_1719,
     'Accessibility permission denied: execution error: System Events got an error: osascript is not allowed assistive access. (-1719)',
+    ACCESSIBILITY_HINT,
+  ],
+  [
+    'a keystroke denial (1002)',
+    KEYSTROKES_DENIED,
+    'Accessibility permission denied: execution error: System Events got an error: osascript is not allowed to send keystrokes. (1002)',
     ACCESSIBILITY_HINT,
   ],
   [

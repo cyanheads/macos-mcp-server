@@ -61,7 +61,11 @@ async function runningAppPid(osascript: OsascriptService, app: string, ctx: Cont
 
 const AppInfoSchema = z
   .object({
-    name: z.string().describe('Application name.'),
+    name: z
+      .string()
+      .describe(
+        'System Events process name, which can differ from the .app name that quit, hide, and show resolve.',
+      ),
     bundle_id: z
       .string()
       .nullable()
@@ -99,7 +103,7 @@ export const macosManageApps = tool('macos_manage_apps', {
   title: 'Manage macOS Apps',
   description:
     'Manage application lifecycle: list all running user-facing apps, get the frontmost app, launch or activate an app, gracefully quit or force-quit a process, or hide/show an app. Launch activates the app if already running; use hidden=true to start in the background without bringing it forward. Force-quit terminates immediately (SIGKILL) without saving. Hide and show require Accessibility permission.',
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       action: z

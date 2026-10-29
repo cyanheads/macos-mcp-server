@@ -116,7 +116,7 @@ export const macosManageFocus = tool('macos_manage_focus', {
   title: 'Manage macOS Focus Mode',
   description:
     'Get or set Do Not Disturb / Focus mode. The get action is best-effort: it reads the Focus state file in ~/Library/DoNotDisturb, which may be unreadable to the server process, and returns status "unknown" when that file cannot be read or parsed. The set action runs a shortcut named "Set Focus" from the Shortcuts library and passes {"mode": <mode>, "enabled": <enabled>} to it as JSON input. That shortcut is not built in: create it so it reads this input (e.g. with Get Dictionary from Input) and applies mode and enabled with the Set Focus action. Mode names must exactly match configured Focus names (e.g. "Do Not Disturb", "Work", "Personal").',
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       action: z

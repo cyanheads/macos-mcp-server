@@ -19,7 +19,7 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
   title: 'Take macOS Screenshot',
   description:
     'Capture a screenshot of the main display (the one with the menu bar), one connected display chosen by display_index, a named app window, or a pixel region. display_index is the 0-based index macos_manage_displays action=list reports for each display. Always saves a full-resolution PNG to disk, by default as a new timestamped file in MACOS_SCREENSHOT_DIR (~/Desktop when unset), and never replaces an existing file unless overwrite is true. With include_data, also returns a JPEG preview (longer side at most 1024 px) as an image content block for visual analysis and as base64 in preview. Window capture requires Screen Recording permission; all other targets do not. When the permission check cannot tell whether Screen Recording is granted, the window capture still runs and notice says why.',
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       target: z

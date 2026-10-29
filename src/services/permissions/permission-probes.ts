@@ -34,20 +34,27 @@ const SCREEN_RECORDING_SCRIPT = `ObjC.import('CoreGraphics');
 ObjC.bindFunction('CGPreflightScreenCaptureAccess', ['bool', []]);
 JSON.stringify({ granted: $.CGPreflightScreenCaptureAccess() });`;
 
+/** The apps whose Automation grant this server checks, with the bundle identifier TCC keys it on. */
+const AUTOMATION_TARGETS = { Finder: 'com.apple.finder', Music: 'com.apple.Music' } as const;
+
+/** An app whose Automation grant `checkAutomation` can read. */
+export type AutomationTarget = keyof typeof AUTOMATION_TARGETS;
+
 /**
  * `AEDeterminePermissionToAutomateTarget(const AEAddressDesc *, AEEventClass,
  * AEEventID, Boolean askUserIfNeeded)` (AE/AppleEvents.h) returns an OSStatus.
- * It asks TCC whether this host may send Finder every event (`typeWildCard`,
+ * It asks TCC whether this host may send the app every event (`typeWildCard`,
  * `'****'`, for class and ID) without sending one, and with `askUserIfNeeded`
  * false it returns errAEEventWouldRequireUserConsent instead of prompting. The
- * target is a `typeApplicationBundleID` descriptor.
+ * target is a `typeApplicationBundleID` descriptor, which neither launches the
+ * app nor sends it anything.
  */
-const AUTOMATION_FINDER_SCRIPT = `ObjC.import('CoreServices');
+const automationScript = (bundleId: string) => `ObjC.import('CoreServices');
 ObjC.import('Foundation');
 ObjC.bindFunction('AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]);
 const typeWildCard = 0x2a2a2a2a;
-const finder = $.NSAppleEventDescriptor.descriptorWithBundleIdentifier('com.apple.finder');
-JSON.stringify({ status: $.AEDeterminePermissionToAutomateTarget(finder.aeDesc, typeWildCard, typeWildCard, false) });`;
+const target = $.NSAppleEventDescriptor.descriptorWithBundleIdentifier('${bundleId}');
+JSON.stringify({ status: $.AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false) });`;
 
 /** OSStatus values AEDeterminePermissionToAutomateTarget documents. */
 const AE_STATUS = {
@@ -65,7 +72,10 @@ const unknown = (reason: string): PermissionCheck => ({ status: 'unknown', reaso
 const fromGranted = ({ granted }: z.infer<typeof GrantedOutput>): PermissionCheck =>
   granted ? { status: 'granted' } : { status: 'denied' };
 
-function fromAutomationStatus({ status }: z.infer<typeof StatusOutput>): PermissionCheck {
+function fromAutomationStatus(
+  { status }: z.infer<typeof StatusOutput>,
+  app: AutomationTarget,
+): PermissionCheck {
   switch (status) {
     case AE_STATUS.noErr:
       return { status: 'granted' };
@@ -73,10 +83,10 @@ function fromAutomationStatus({ status }: z.infer<typeof StatusOutput>): Permiss
       return { status: 'denied' };
     case AE_STATUS.errAEEventWouldRequireUserConsent:
       return unknown(
-        'macOS has not asked yet; it asks for consent the first time this host sends Finder an Apple event',
+        `macOS has not asked yet; it asks for consent the first time this host sends ${app} an Apple event`,
       );
     case AE_STATUS.procNotFound:
-      return unknown('Finder is not running, and macOS answers this check only for a running app');
+      return unknown(`${app} is not running, and macOS answers this check only for a running app`);
     default:
       return unknown(`macOS answered with status ${status}, which this check does not recognize`);
   }
@@ -120,10 +130,15 @@ export function checkScreenRecording(ctx: Context): Promise<PermissionCheck> {
 }
 
 /**
- * Automation > Finder, from `AEDeterminePermissionToAutomateTarget` with
+ * Automation > `app`, from `AEDeterminePermissionToAutomateTarget` with
  * `askUserIfNeeded` false. `unknown` while macOS has not asked yet and while
- * Finder is not running.
+ * the app is not running.
  */
-export function checkAutomationFinder(ctx: Context): Promise<PermissionCheck> {
-  return runProbe(AUTOMATION_FINDER_SCRIPT, StatusOutput, fromAutomationStatus, ctx);
+export function checkAutomation(app: AutomationTarget, ctx: Context): Promise<PermissionCheck> {
+  return runProbe(
+    automationScript(AUTOMATION_TARGETS[app]),
+    StatusOutput,
+    (output) => fromAutomationStatus(output, app),
+    ctx,
+  );
 }

@@ -13,6 +13,7 @@ import { macosSystemInfoResource } from './mcp-server/resources/definitions/maco
 import { macosCheckPermissions } from './mcp-server/tools/definitions/macos-check-permissions.tool.js';
 import { macosControlAppearance } from './mcp-server/tools/definitions/macos-control-appearance.tool.js';
 import { macosControlAudio } from './mcp-server/tools/definitions/macos-control-audio.tool.js';
+import { macosControlMusic } from './mcp-server/tools/definitions/macos-control-music.tool.js';
 import { macosControlSystem } from './mcp-server/tools/definitions/macos-control-system.tool.js';
 import { macosControlVolume } from './mcp-server/tools/definitions/macos-control-volume.tool.js';
 import { macosGetInfo } from './mcp-server/tools/definitions/macos-get-info.tool.js';
@@ -50,6 +51,7 @@ await createApp({
     macosControlSystem,
     macosManageWindows,
     macosControlAudio,
+    macosControlMusic,
     macosManageDisplays,
     macosTakeScreenshot,
     macosManageFinder,
@@ -57,6 +59,7 @@ await createApp({
   ],
   resources: [macosSystemInfoResource, macosAudioDevicesResource, macosDisplaysResource],
   prompts: [],
+  skills: 'skills',
   setup(core) {
     initOsascriptService(core.config, core.storage);
     initSystemInfoService(core.config, core.storage);
@@ -64,5 +67,5 @@ await createApp({
     initDisplayService(core.config, core.storage);
     initScreencaptureService(core.config, core.storage);
   },
-  instructions: `macOS system controls server (local-only; stdio or Streamable HTTP). Provides app lifecycle, window management, audio routing, display management, screenshots, Finder integration, notifications, and Focus mode control. Use macos_check_permissions first to confirm which permissions are granted before attempting window manipulation, screenshots, or Finder selection.`,
+  instructions: `macOS system controls server (local-only; stdio or Streamable HTTP). Provides app lifecycle, window management, audio routing, Music playback, display management, screenshots, Finder integration, notifications, and Focus mode control. macos_check_permissions reports Accessibility, Screen Recording, and Automation > Finder and Music without prompting; Automation > Music reads null while Music is not running, and the check cannot see Automation > System Events, which app, window, appearance, and lock calls also need. A permission error names the pane to grant.`,
 });

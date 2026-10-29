@@ -54,7 +54,7 @@ export const macosManageFinder = tool('macos_manage_finder', {
   title: 'Manage macOS Finder',
   description:
     'Finder integration: get the path of the frontmost Finder window, get the current Finder selection, reveal a file or folder in Finder, open a path with a specific app, or move a path to the Trash (recoverable — goes to Trash, not rm). reveal and open_with need no special permissions; frontmost_path, get_selection, and trash script Finder and require Automation > Finder permission. trash moves files to Trash and never falls back to permanent deletion.',
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       action: z

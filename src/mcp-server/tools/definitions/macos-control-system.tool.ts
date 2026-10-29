@@ -3,30 +3,70 @@
  * @module mcp-server/tools/definitions/macos-control-system
  */
 
-import { execFile as execFileCallback } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { forbidden } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, type McpError } from '@cyanheads/mcp-ts-core/errors';
 import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
-import { execFailure } from '@/utils/exec-failure.js';
+import { isPermissionDenial } from '@/services/osascript/permission-denial.js';
+import { execFailure, execFailureDetail } from '@/utils/exec-failure.js';
 
 const execFile = promisify(execFileCallback);
+
+/** ⌃⌘Q, the system lock shortcut, typed through System Events. */
+const LOCK_KEYSTROKE =
+  'tell application "System Events" to keystroke "q" using {command down, control down}';
+
+/**
+ * Starts ScreenSaverEngine detached and settles once it is running (`spawn`) or
+ * could not start (`error`, resolved with that error). ScreenSaverEngine is an
+ * NSApplication that runs until dismissed, so the child gets no timeout or
+ * signal and is never awaited: ending it would end the screen saver it started.
+ */
+function startScreenSaver(): Promise<NodeJS.ErrnoException | undefined> {
+  return new Promise((resolve) => {
+    const child = spawn(SYSTEM_BINARIES.ScreenSaverEngine, [], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.once('spawn', () => resolve(undefined));
+    child.once('error', resolve);
+    child.unref();
+  });
+}
 
 export const macosControlSystem = tool('macos_control_system', {
   title: 'Control macOS System',
   description:
-    'System-level power controls: lock the screen (⌃⌘Q shortcut via Accessibility; falls back to ScreenSaverEngine binary if Accessibility is not granted) or put the display to sleep immediately. Both operations are immediate and user-reversible (wake/unlock with any input).',
-  annotations: { readOnlyHint: false, openWorldHint: false },
+    'System-level power controls. lock sends the ⌃⌘Q lock shortcut through System Events, which needs Accessibility and Automation > System Events. When either permission is denied, lock starts the screen saver instead, which locks the session only when "Require password after screen saver begins or display is turned off" is set to Immediately in System Settings > Lock Screen; the method field reports which one ran. sleep_display turns off all displays immediately. Both are reversed by any input (wake or unlock).',
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: z.object({
     action: z
       .enum(['lock', 'sleep_display'])
-      .describe('lock — lock the screen immediately. sleep_display — turn off all displays.'),
+      .describe(
+        'lock — lock the screen with the ⌃⌘Q shortcut, or start the screen saver when the shortcut is denied; method in the result says which. sleep_display — turn off all displays.',
+      ),
   }),
   output: z.object({
     success: z.boolean().describe('True when the operation completed.'),
     action: z.string().describe('The action that was performed.'),
+    method: z
+      .enum(['keystroke', 'screen_saver'])
+      .optional()
+      .describe(
+        'How lock ran; present for action=lock only. keystroke — the ⌃⌘Q shortcut was sent, which locks the session. screen_saver — the shortcut was denied and the screen saver was started, which locks the session only when "Require password after screen saver begins or display is turned off" is set to Immediately.',
+      ),
   }),
+  errors: [
+    {
+      reason: 'accessibility_required',
+      code: JsonRpcErrorCode.Forbidden,
+      when: 'lock: the ⌃⌘Q shortcut was denied Accessibility or Automation > System Events, and the ScreenSaverEngine fallback could not start.',
+      recovery:
+        'Grant Accessibility in System Settings > Privacy & Security > Accessibility for your terminal or MCP host app.',
+    },
+  ],
 
   async handler(input, ctx) {
     const osascript = getOsascriptService();
@@ -45,38 +85,34 @@ export const macosControlSystem = tool('macos_control_system', {
       return { success: true, action: input.action };
     }
 
-    // lock: try ⌃⌘Q via Accessibility keystroke, fall back to ScreenSaverEngine
     try {
-      await osascript.runAppleScript(
-        'tell application "System Events" to keystroke "q" using {command down, control down}',
-        ctx,
-        { timeoutMs: 5_000 },
-      );
-      return { success: true, action: input.action };
-    } catch {
-      // A cancelled request never falls through to the fallback.
+      await osascript.runAppleScript(LOCK_KEYSTROKE, ctx, { timeoutMs: 5_000 });
+      return { success: true, action: input.action, method: 'keystroke' as const };
+    } catch (err: unknown) {
+      // Also the check before the spawn: nothing between here and it awaits.
       ctx.signal.throwIfAborted();
-      // Accessibility denied or keystroke failed — try ScreenSaverEngine binary
-      try {
-        await execFile(SYSTEM_BINARIES.ScreenSaverEngine, [], {
-          timeout: 5_000,
-          signal: ctx.signal,
-        });
-        return { success: true, action: input.action };
-      } catch {
-        ctx.signal.throwIfAborted();
-        // Both paths failed; surface a structured error
-        throw forbidden(
-          'Lock screen failed: Accessibility permission is needed for the keystroke method. Grant Accessibility in System Settings > Privacy & Security > Accessibility, or verify the ScreenSaverEngine binary exists at /System/Library/CoreServices/ScreenSaverEngine.app.',
+      // Only a denied shortcut falls back: a timed-out one may still lock late, and any other failure is the caller's to see.
+      if (!isPermissionDenial(err)) throw err;
+      const spawnError = await startScreenSaver();
+      if (spawnError) {
+        const denial = err as McpError;
+        // The service's hint names the pane actually denied: Accessibility or Automation > System Events.
+        const { recovery } = denial.data as { recovery: { hint: string } };
+        throw ctx.fail(
+          'accessibility_required',
+          `${denial.message}; the ScreenSaverEngine fallback could not start (${execFailureDetail(spawnError)}).`,
+          { recovery },
+          { cause: spawnError },
         );
       }
+      return { success: true, action: input.action, method: 'screen_saver' as const };
     }
   },
 
   format: (result) => [
     {
       type: 'text',
-      text: `**${result.action}** success: ${result.success ? 'true — Completed' : 'false — Failed'}`,
+      text: `**${result.action}** success: ${result.success ? 'true — Completed' : 'false — Failed'}${result.method ? `\n**method:** ${result.method}` : ''}`,
     },
   ],
 });

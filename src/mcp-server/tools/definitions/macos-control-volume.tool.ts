@@ -88,7 +88,7 @@ export const macosControlVolume = tool('macos_control_volume', {
   title: 'Control macOS Volume',
   description:
     'Get or set the system output volume level (0–100) and mute state of the default output. The get action returns the current level and mute state; on an output with no software volume control, such as many HDMI or DisplayPort displays, both read null and output_device names the device. The set action requires level (0–100), muted (true/false), or both, and fails with volume_unsupported on an output that has no software control for the requested value. Setting level=0 does not mute — use muted=true for explicit muting.',
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       action: z

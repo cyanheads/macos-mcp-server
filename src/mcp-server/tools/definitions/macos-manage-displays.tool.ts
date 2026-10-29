@@ -75,7 +75,7 @@ export const macosManageDisplays = tool('macos_manage_displays', {
   title: 'Manage macOS Displays',
   description:
     "List connected displays with their current layout (resolution, position, rotation, scaling) and each display's index, the display_index macos_take_screenshot and macos_manage_windows use, or apply a pre-configured display layout by name. Requires displayplacer CLI (brew install displayplacer). Layouts are pre-configured in the MACOS_DISPLAY_LAYOUTS environment variable as a JSON object mapping names to displayplacer argument strings; action=list returns their names as layouts. Layout application only accepts named presets — raw displayplacer args are never accepted from the user.",
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       action: z

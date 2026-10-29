@@ -27,7 +27,7 @@ export const macosControlAudio = tool('macos_control_audio', {
   title: 'Control macOS Audio Routing',
   description:
     'Manage audio device routing: list all input and output devices, get the current default input and output devices, or switch the default input or output device. Device names support case-insensitive partial matching — "MacBook" matches "MacBook Pro Microphone". Volume level control is separate (use macos_control_volume). Requires SwitchAudioSource CLI (brew install switchaudio-osx).',
-  annotations: { readOnlyHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       action: z
