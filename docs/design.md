@@ -11,7 +11,7 @@
 | `macos_manage_windows` | Window operations — list, focus, move/resize, minimize, fullscreen, close | `action` enum, `app_name?`, `window_title?`, bounds params | `destructiveHint: true` (`close`) |
 | `macos_control_volume` | Get or set system volume level and mute state | `action: "get" \| "set"`, `level?` (0–100), `muted?` | `destructiveHint: false` |
 | `macos_control_audio` | Audio device routing — list devices, get current input/output, switch default input or output | `action` enum, `device?`, `type?` | `destructiveHint: false` |
-| `macos_control_music` | Music app playback — play, pause, stop, next, previous, play a playlist by exact name, set shuffle or repeat, read the current state and track | `action` enum, `playlist?`, `shuffle?`, `repeat?: "off" \| "one" \| "all"` | `destructiveHint: false` |
+| `macos_control_music` | Music app playback — play, pause, stop, next, previous, play a playlist by name, set shuffle or repeat, read the current state and track | `action` enum, `playlist?`, `shuffle?`, `repeat?: "off" \| "one" \| "all"` | `destructiveHint: false` |
 | `macos_control_appearance` | Get or set dark/light mode | `action: "get" \| "set"`, `mode?: "dark" \| "light" \| "toggle"` | `destructiveHint: false` |
 | `macos_control_system` | System-level power controls — lock screen or sleep display | `action: "lock" \| "sleep_display"` | `destructiveHint: false` |
 | `macos_take_screenshot` | Capture the main display, a named app window, one display by `display_index` (the index `macos_manage_displays` `list` reports), or a region. Always saves full-res PNG to disk without replacing an existing file unless `overwrite` is true; optionally returns a JPEG preview as an image content block and as base64. | `target: "screen" \| "window" \| "display" \| "region"`, `app_name?`, `display_index?`, `region?`, `path?`, `overwrite?`, `include_data?` | `destructiveHint: true` (`overwrite`) |
@@ -100,7 +100,7 @@ No API keys or secrets. The server config is minimal by design.
 4. `macos_control_volume` (simple, no permission needed)
 5. `macos_send_notification` (simple, no permission needed)
 6. `macos_control_appearance` (simple, no permission needed)
-7. `macos_control_system` (lock/sleep_display, no permission needed)
+7. `macos_control_system` (lock needs Accessibility and Automation > System Events for its keystroke; sleep_display needs no permission)
 8. `macos_manage_windows` (requires Accessibility, list included)
 9. AudioService + `macos_control_audio` (SwitchAudioSource)
 10. DisplayService + `macos_manage_displays` (displayplacer)
@@ -178,13 +178,13 @@ The list script rethrows a permission denial (-25211 or "assistive access", -174
 |:----------|:--------------|:-----------|
 | Running check (every action but `play` and `play_playlist`) | `Application('Music').running()` via JXA — asks Launch Services, sends Music no Apple event, never launches it | None |
 | Play | `music.play()`; launches Music when it is closed | Automation > Music |
-| Play playlist | Lookup first: `playlists.byName(<name>).exists()`, printing the playlist name Music reports or `null` (`playlist_not_found`, nothing played); then `music.play(music.playlists.byName(<name>))`. The first playlist with that exact name plays; launches Music when it is closed | Automation > Music |
+| Play playlist | Lookup first: `playlists.byName(<name>).exists()`, printing the playlist name Music reports or `null` (`playlist_not_found`, nothing played); then `music.play(music.playlists.byName(<name>))`. Music resolves the name, and the first playlist it matches plays; launches Music when it is closed | Automation > Music |
 | Pause / stop | `music.pause()` / `music.stop()`; a closed Music is left closed (`running: false`) | Automation > Music |
 | Next / previous | `music.nextTrack()` / `music.previousTrack()`; a closed Music is `not_running` | Automation > Music |
 | Set shuffle / repeat | `music.shuffleEnabled = <bool>` / `music.songRepeat = "off" \| "one" \| "all"`; a closed Music is `not_running` | Automation > Music |
 | Get current | Read only; a closed Music is left closed (`running: false`) | Automation > Music |
 
-Every action is one JXA script: the command, then a state read back, so a write reports the value Music holds. The read-back reads `playerState`, `shuffleEnabled`, and `songRepeat`, then `currentTrack`. Only error -1728 (errAENoSuchObject) on the `currentTrack` read degrades to `track: null`: Music raises it when nothing is loaded, and macOS 26 raises it for a track outside the library (Apple Music radio, catalog playback) while transport commands still work. The result then carries `track_unavailable` when the player is not stopped. Any other error, an Automation denial (-1743) included, is rethrown for `OsascriptService` to classify as `accessibility_required`. An empty `artist` or `album` reads as `null`.
+Every action is one JXA script (after the lookup, for `play_playlist`): the command, then a state read back, so a write reports the value Music holds. The read-back reads `playerState`, `shuffleEnabled`, and `songRepeat`, then `currentTrack`. Only error -1728 (errAENoSuchObject) on the `currentTrack` read degrades to `track: null`: Music raises it when nothing is loaded, and macOS 26 raises it for a track outside the library (Apple Music radio, catalog playback) while transport commands still work. The result then carries `track_unavailable` when the player is not stopped. Any other error, an Automation denial (-1743) included, is rethrown for `OsascriptService` to classify as `accessibility_required`. An empty `artist` or `album` reads as `null`.
 
 `play` and `play_playlist` run with a 15 s timeout: a cold Music launch, or the first-use Automation consent dialog osascript waits on, can outlast the service's 10 s default. The playlist name enters the script only through `JSON.stringify`.
 
