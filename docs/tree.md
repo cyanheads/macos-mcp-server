@@ -1,6 +1,6 @@
 # macos-mcp-server - Directory Structure
 
-Generated on: 2026-10-22 00:53:13
+Generated on: 2026-10-29 18:34:40
 
 ```text
 macos-mcp-server/
@@ -27,6 +27,7 @@ macos-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -39,6 +40,8 @@ macos-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -136,6 +139,9 @@ macos-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── macos-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -150,6 +156,7 @@ macos-mcp-server/
 │   │       │   ├── macos-check-permissions.tool.ts
 │   │       │   ├── macos-control-appearance.tool.ts
 │   │       │   ├── macos-control-audio.tool.ts
+│   │       │   ├── macos-control-music.tool.ts
 │   │       │   ├── macos-control-system.tool.ts
 │   │       │   ├── macos-control-volume.tool.ts
 │   │       │   ├── macos-get-info.tool.ts
@@ -192,6 +199,8 @@ macos-mcp-server/
 │   │   └── commonmark.ts
 │   ├── resources/
 │   │   └── macos-displays.resource.test.ts
+│   ├── scripts/
+│   │   └── clean-mcpb.test.ts
 │   ├── security/
 │   │   └── injection.test.ts
 │   ├── services/
@@ -211,6 +220,7 @@ macos-mcp-server/
 │   │   ├── macos-check-permissions.tool.test.ts
 │   │   ├── macos-control-appearance.tool.test.ts
 │   │   ├── macos-control-audio.tool.test.ts
+│   │   ├── macos-control-music.tool.test.ts
 │   │   ├── macos-control-system.tool.test.ts
 │   │   ├── macos-control-volume.tool.test.ts
 │   │   ├── macos-get-info.tool.test.ts
@@ -221,7 +231,8 @@ macos-mcp-server/
 │   │   ├── macos-manage-windows.tool.test.ts
 │   │   ├── macos-send-notification.tool.test.ts
 │   │   ├── macos-take-screenshot.tool.test.ts
-│   │   └── missing-arguments.test.ts
+│   │   ├── missing-arguments.test.ts
+│   │   └── tool-annotations.test.ts
 │   └── utils/
 │       ├── markdown-literal.test.ts
 │       └── parse-json-output.test.ts
@@ -238,7 +249,9 @@ macos-mcp-server/
 ├── devcheck.config.json
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-29
+
+Adds macos_control_music for Music app playback, makes the lock screen-saver fallback run only when the keystroke is denied and report which method ran, and marks the destructive write tools with destructiveHint. Publishes a macos-guide skill and adopts mcp-ts-core 0.13.18.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-10-21 · ⚠️ Breaking · 🛡️ Security
 
 State reads report what the probe saw: failed probes return null instead of invented values, permission checks never prompt, and window, app, and display targets are matched exactly. Screenshot paths are bounded and never replace an existing file unless overwrite is set.
