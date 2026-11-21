@@ -86,6 +86,7 @@ import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
 import { initDisplayService } from '@/services/display/display-service.js';
 import { getOsascriptService } from '@/services/osascript/osascript-service.js';
 import { initScreencaptureService } from '@/services/screencapture/screencapture-service.js';
+import { commonMarkBlocks } from '../helpers/commonmark.js';
 
 const { OsascriptService } = await vi.importActual<
   typeof import('@/services/osascript/osascript-service.js')
@@ -166,14 +167,18 @@ interface Failure {
  * Asserts a rejected call carries `code` and `reason` with `hint` on both
  * surfaces: on the structured error, and on its own line of the rendered text
  * — or inside the message line, when the message already quotes it, which is
- * when the framework writes no separate line.
+ * when the framework writes no separate line. The framework escapes the
+ * message and hint in `content[]` (a `~` reads `\~`), so each rendered line is
+ * compared as a CommonMark parse reads it back.
  */
 function expectFailure(result: ToolContractResult, { code, hint, message, reason }: Failure): void {
   expect(result.isError).toBe(true);
   const error = errorOf(result);
   expect(error).toMatchObject({ code, data: { reason, recovery: { hint } } });
   if (message !== undefined) expect(error.message).toBe(message);
-  const lines = contentText(result).split('\n');
+  const lines = contentText(result)
+    .split('\n')
+    .map((line) => commonMarkBlocks(line).join('\n'));
   expect(lines[0]).toBe(`Error: ${error.message}`);
   if (!error.message?.includes(hint)) expect(lines).toContain(`Recovery: ${hint}`);
   expect(lines.at(-1)).toMatch(new RegExp(`^\\(reason ${reason}( · request [^)]+)?\\)$`));

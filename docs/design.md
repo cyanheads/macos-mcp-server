@@ -809,7 +809,7 @@ errors: [
   app_name?: string,      // window target: running app by application, localized, or process name (case-insensitive), resolved to PIDs; the lookup matches kCGWindowOwnerPID
   display_index?: number, // display target: the index macos_manage_displays action=list reports (0 = main display)
   region?: { x: number, y: number, width: number, height: number },  // region target: points in global display coordinates (0,0 = the main display's top-left; negative left of or above it); width and height > 0
-  path?: string,          // ends in .png; directory must exist inside /tmp, home, or MACOS_SCREENSHOT_DIR (resolved); omitted or "" = MACOS_SCREENSHOT_DIR/screenshot-<timestamp>.png
+  path?: string,          // ends in .png; directory must exist inside /tmp, home, or MACOS_SCREENSHOT_DIR (resolved; when unset, ~/Desktop counts only for a path written under ~/Desktop); omitted or "" = MACOS_SCREENSHOT_DIR/screenshot-<timestamp>.png
   overwrite?: boolean,    // default false; true replaces the regular .png file found at path when the call checks it — never a link, a directory, or an entry created after the check
   include_data?: boolean, // default false; when true, returns a JPEG preview (longer side ≤ 1024 px, never enlarged) as an image content block and as base64
 }
@@ -845,8 +845,8 @@ errors: [
     when: 'display_index references a display not in the current configuration',
     recovery: 'Call macos_manage_displays with action=list and pass the index of one of its displays as display_index.' },
   { reason: 'path_not_writable', code: ValidationError,
-    when: 'path is not absolute or resolves outside MACOS_SCREENSHOT_DIR, /tmp, and the home directory, or its directory (MACOS_SCREENSHOT_DIR when path is omitted) does not exist, cannot be written, or is a folder macOS has not allowed the host app to access (EPERM).',
-    recovery: 'Pass a path in an existing directory inside MACOS_SCREENSHOT_DIR, /tmp, or the home directory, or create the MACOS_SCREENSHOT_DIR directory. When macOS denied access (EPERM), allow the host app in System Settings > Privacy & Security > Files & Folders.' },
+    when: 'path is not absolute or resolves outside /tmp, the home directory, and MACOS_SCREENSHOT_DIR (when unset, ~/Desktop, for a path written under ~/Desktop), or its directory (MACOS_SCREENSHOT_DIR when path is omitted) does not exist, cannot be written, or is a folder macOS has not allowed the host app to access (EPERM).',
+    recovery: 'Pass a path in an existing directory inside /tmp, the home directory, or MACOS_SCREENSHOT_DIR (when unset, ~/Desktop, for a path written under ~/Desktop), or create the MACOS_SCREENSHOT_DIR directory. When macOS denied access (EPERM), allow the host app in System Settings > Privacy & Security > Files & Folders.' },
   { reason: 'path_exists', code: Conflict,
     when: 'path already names a file, directory, or other entry and overwrite is not true, or overwrite is true and the entry is not a regular file, or the entry at path is not the one the call checked before capturing.',
     recovery: 'Choose a path that does not exist, omit path for a new timestamped file, or pass overwrite: true to replace a regular .png file.' },

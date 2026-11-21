@@ -291,6 +291,14 @@ describe('macosTakeScreenshot', () => {
       'Choose a path that does not exist, omit path for a new timestamped file, or pass overwrite: true to replace a regular .png file.',
     );
   });
+
+  it('the path_not_writable recovery says unset MACOS_SCREENSHOT_DIR admits only a path written under ~/Desktop', () => {
+    expect(
+      macosTakeScreenshot.errors?.find((e) => e.reason === 'path_not_writable')?.recovery,
+    ).toBe(
+      'Pass a path in an existing directory inside /tmp, the home directory, or MACOS_SCREENSHOT_DIR (when unset, ~/Desktop, for a path written under ~/Desktop), or create the MACOS_SCREENSHOT_DIR directory. When macOS denied access (EPERM), allow the host app in System Settings > Privacy & Security > Files & Folders.',
+    );
+  });
 });
 
 describe('macosTakeScreenshot through its contract', () => {

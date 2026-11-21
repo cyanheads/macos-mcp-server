@@ -153,9 +153,9 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
     {
       reason: 'path_not_writable',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'path is not absolute or resolves outside MACOS_SCREENSHOT_DIR, /tmp, and the home directory, or its directory (MACOS_SCREENSHOT_DIR when path is omitted) does not exist, cannot be written, or is a folder macOS has not allowed the host app to access (EPERM).',
+      when: 'path is not absolute or resolves outside /tmp, the home directory, and MACOS_SCREENSHOT_DIR (when unset, ~/Desktop, for a path written under ~/Desktop), or its directory (MACOS_SCREENSHOT_DIR when path is omitted) does not exist, cannot be written, or is a folder macOS has not allowed the host app to access (EPERM).',
       recovery:
-        'Pass a path in an existing directory inside MACOS_SCREENSHOT_DIR, /tmp, or the home directory, or create the MACOS_SCREENSHOT_DIR directory. When macOS denied access (EPERM), allow the host app in System Settings > Privacy & Security > Files & Folders.',
+        'Pass a path in an existing directory inside /tmp, the home directory, or MACOS_SCREENSHOT_DIR (when unset, ~/Desktop, for a path written under ~/Desktop), or create the MACOS_SCREENSHOT_DIR directory. When macOS denied access (EPERM), allow the host app in System Settings > Privacy & Security > Files & Folders.',
       thrownBy: 'service',
     },
     {
