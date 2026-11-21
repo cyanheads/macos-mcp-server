@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.4.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/macos-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/macos-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/macos-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/macos-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -32,18 +32,18 @@ Control your Mac from an agent: launch, quit, and arrange apps and windows, swit
 | Tool | Description |
 |:-----|:------------|
 | `macos_get_info` | System snapshot: battery level and charging status, power source, Wi-Fi association and network name, hostname, macOS version, uptime, and display count; a failed probe leaves its field null and named in `unavailable` |
-| `macos_check_permissions` | Reports Accessibility, Screen Recording, Automation > Finder, and Automation > Music status for the calling process from Apple's prompt-free checks — null with a reason when a check can't tell |
-| `macos_manage_apps` | List running apps, get the frontmost app, launch, quit, force-quit, hide, or show applications |
+| `macos_check_permissions` | Reports Accessibility, Screen Recording, Automation > System Events, Automation > Finder, and Automation > Music status for the calling process from Apple's prompt-free checks — null with a reason when a check can't tell |
+| `macos_manage_apps` | List running apps (with the `app_name` the lifecycle actions take), get the frontmost app, launch, quit, force-quit, hide, or show applications |
 | `macos_manage_windows` | List, focus, move, resize, move_resize, minimize, fullscreen, or close windows across all visible apps |
 | `macos_control_volume` | Get or set system output volume (0–100) and mute state |
 | `macos_control_audio` | List audio devices, get current defaults, or switch the default input/output device |
-| `macos_control_music` | Play, pause, stop, skip, play a playlist by name, set shuffle or repeat, or read what the Music app is playing |
+| `macos_control_music` | Play, pause, stop, skip, list playlists, play a playlist by name, set shuffle or repeat, or read what the Music app is playing |
 | `macos_control_appearance` | Get or set dark/light mode |
 | `macos_control_system` | Lock the screen or put the display to sleep |
-| `macos_take_screenshot` | Capture the main display, one display by `display_index`, a named app window, or a pixel region; saves a PNG without replacing existing files unless `overwrite` is true, optional JPEG preview |
-| `macos_manage_displays` | List connected displays (with each one's `index`) and the configured layout names, and apply a named display layout preset |
+| `macos_take_screenshot` | Capture the main display, one display by `display_index`, a named app window, or a region in points; saves a PNG without replacing existing files unless `overwrite` is true, optional JPEG preview |
+| `macos_manage_displays` | List connected displays (with each one's `index` and `scale_factor`) and the configured layout names, and apply a named display layout preset |
 | `macos_send_notification` | Post a notification to macOS Notification Center |
-| `macos_manage_focus` | Get or set Do Not Disturb / Focus mode |
+| `macos_manage_focus` | Get, list, or set Do Not Disturb / Focus mode |
 | `macos_manage_finder` | Frontmost path, current selection, reveal, open with app, or move to Trash |
 
 ### Resources
@@ -52,7 +52,7 @@ Control your Mac from an agent: launch, quit, and arrange apps and windows, swit
 |:-----|:------------|
 | `macos://system/info` | Current macOS system snapshot: battery, power source, Wi-Fi association and network name, hostname, version, uptime, display count; a failed probe leaves its field null and named in `unavailable` |
 | `macos://audio/devices` | All audio input and output devices, including which is the current default. Requires SwitchAudioSource CLI. |
-| `macos://displays` | Connected display inventory including persistent IDs, index (the `display_index` `macos_take_screenshot` and `macos_manage_windows` use), type, resolution, origin, rotation, scaling, and enabled state. Requires displayplacer CLI. |
+| `macos://displays` | Connected display inventory including persistent IDs, index (the `display_index` `macos_take_screenshot` and `macos_manage_windows` use), `scale_factor` (pixels per point), type, resolution and origin in points, rotation, scaling, and enabled state. Requires displayplacer CLI. |
 
 Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`action=list`), and `macos_manage_displays` (`action=list`).
 
@@ -71,21 +71,21 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos_check_permissions` <sub>tool</sub>
 
-- Reports **Accessibility** (every `macos_manage_windows` action, `list` included; `macos_manage_apps` `hide` and `show`, and the `window_title` `frontmost` reads; the ⌃⌘Q keystroke `macos_control_system` `lock` sends before it falls back to the screen saver), **Screen Recording** (window screenshots), **Automation > Finder** (`macos_manage_finder` `frontmost_path`, `get_selection`, and `trash`), and **Automation > Music** (`macos_control_music`) from Apple's prompt-free checks: `AXIsProcessTrusted`, `CGPreflightScreenCaptureAccess`, and `AEDeterminePermissionToAutomateTarget` with prompting off
-- Each field is `true`, `false`, or `null` when the check can't tell; `unknown_reasons` names why each `null` is unknown. Automation > Finder and Automation > Music read `null` until macOS has asked for consent and while that app isn't running. **Notifications** is always `null`: macOS has no prompt-free check for it
+- Reports **Accessibility** (every `macos_manage_windows` action, `list` included; `macos_manage_apps` `hide` and `show`, and the `window_title` `frontmost` reads; the ⌃⌘Q keystroke `macos_control_system` `lock` sends before it falls back to the screen saver), **Screen Recording** (every `macos_take_screenshot` target), **Automation > System Events** (`macos_control_appearance`; every `macos_manage_windows` action; `macos_manage_apps` `frontmost`, `force_quit`, `hide`, and `show`; the `macos_control_system` `lock` keystroke), **Automation > Finder** (`macos_manage_finder` `frontmost_path`, `get_selection`, and `trash`), and **Automation > Music** (`macos_control_music`) from Apple's prompt-free checks: `AXIsProcessTrusted`, `CGPreflightScreenCaptureAccess`, and `AEDeterminePermissionToAutomateTarget` with prompting off
+- Each field is `true`, `false`, or `null` when the check can't tell; `unknown_reasons` names why each `null` is unknown. Automation > System Events, Automation > Finder, and Automation > Music read `null` until macOS has asked for consent and while that app isn't running; System Events starts when a call scripts it and quits once idle, so its `null` while it isn't running says nothing about the grant. **Notifications** is always `null`: macOS has no prompt-free check for it
 - Returns the calling process name (e.g. `"ghostty"`, `"node"`) so you know which process to grant permissions for
-- Read-only — no check sends an Apple event to another app, captures the screen, or can show a permission prompt
+- Read-only — no check sends an Apple event to another app, launches one, captures the screen, or can show a permission prompt
 - Run this first when debugging why another tool is failing
 
 ---
 
 ### `macos_manage_apps` <sub>tool</sub>
 
-- `list` — running user-facing apps with name, bundle ID, PID, visible, and frontmost flags
-- `frontmost` — name, bundle ID, PID, and frontmost window title of the active app
+- `list` — running apps with a Dock icon, read from NSWorkspace: no permission, no Apple event. Each carries `name` (the executable name, e.g. `firefox` for Firefox), `app_name` (the `.app` bundle name without `.app`, e.g. `Visual Studio Code`, the name `quit`, `force_quit`, `hide`, and `show` take; `null` for an app with no `.app` bundle), bundle ID, PID, `visible` (not hidden), and `frontmost` (active)
+- `frontmost` — name, bundle ID, PID, and frontmost window title of the active app; scripts System Events, so it needs Automation > System Events, and Accessibility for `window_title`
 - `launch` — open or activate by `app_name` or `bundle_id`; `hidden=true` starts in the background
 - `quit` (graceful AppleScript quit) vs. `force_quit` (SIGKILL, no save prompt)
-- `hide` / `show` — toggle visibility; requires Accessibility
+- `hide` / `show` — toggle visibility; require Accessibility; `hide`, `show`, and `force_quit` script System Events and need Automation > System Events
 - `quit`, `force_quit`, `hide`, and `show` first check that the app is running — resolved by application name the way `tell application` does (`"Visual Studio Code"` finds the `Code` process), without launching it — and return `not_running` when it isn't
 - Typed errors: `app_not_found` (`launch` of an app that isn't installed), `no_frontmost_app` (System Events reports no frontmost process), `not_running`, `accessibility_required`
 
@@ -96,7 +96,7 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 - `list` — all visible windows across apps, with position, size, `minimized` and `fullscreen` state (each read from the window's `AXMinimized` / `AXFullScreen` attribute, `null` when it can't be read), and `display_index`: the display the window overlaps most (the index `macos_manage_displays action=list` reports), or `null` when the display frames can't be read or the window overlaps none. Two windows that share a title, and the windows of two processes that share a name, are each listed
 - `focus`, `move`, `resize`, `move_resize`, `minimize`, `fullscreen`, `close` — target by `window_title` (exact, ignoring case, in any app; when two windows of one app share the title, the frontmost of them) or `app_name` (that app's frontmost window); `window_title` takes precedence and `app_name` is then ignored
 - `app_name` matches a running app by its application name (`"Visual Studio Code"`), localized name (`"Code"`), or process name (`"firefox"`), ignoring case; it is resolved from the running-application list, so no app is launched or sent an Apple event to find it
-- `move` needs `x`/`y`, `resize` needs `width`/`height` (both greater than 0), `move_resize` needs all four
+- `move` needs `x`/`y`, `resize` needs `width`/`height` (both greater than 0), `move_resize` needs all four. Bounds, in input and output, are points in global display coordinates (0,0 is the main display's top-left; a display to its left or above has negative values), the space `macos_manage_displays action=list` reports each display's `origin` and `resolution` in, not pixels
 - `minimize` — `minimized: true` (the default) minimizes, `false` restores; it writes the window's `AXMinimized` attribute only when the window is not already in that state, and succeeds only when the window reads back in the requested state
 - `fullscreen` — `fullscreen: true` enters, `false` exits, omitted toggles the window's current state. When the state differs it raises the target window, as `focus` does, and sets its `AXFullScreen` attribute (no keystroke, so the window that had keyboard focus is never toggled); it waits up to 4 s for the window to read back in the requested state
 - Every action, `list` included, scripts System Events and requires Accessibility; a denial returns `accessibility_required` and never reads as "no windows". `focus` raises the window and brings its app forward; no action launches an app
@@ -118,23 +118,24 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 - `list` — all input/output devices with an `is_default` flag; filter with `type`
 - `current` — default input and output device names
-- `switch_output` / `switch_input` — case-insensitive partial name match (`"MacBook"` matches `"MacBook Pro Microphone"`)
+- `switch_output` / `switch_input` — pick one device of that type by name: a name identical to `device` wins when exactly one device has it; otherwise the one name equal to it ignoring case, else the one name containing it ignoring case (`"MacBook"` picks `"MacBook Pro Microphone"`). Two or more fitting names, or two devices sharing a name, fail as `device_ambiguous` naming each, and nothing is switched; use the full name `list` returns
 - Volume level is separate (`macos_control_volume`)
-- Requires SwitchAudioSource CLI (`brew install switchaudio-osx`); typed errors `device_not_found`, `switchaudio_unavailable`
+- Requires SwitchAudioSource CLI (`brew install switchaudio-osx`); typed errors `device_not_found`, `device_ambiguous`, `switchaudio_unavailable`
 
 ---
 
 ### `macos_control_music` <sub>tool</sub>
 
-- `play` resumes or starts playback; `play_playlist` plays the playlist named by `playlist` (exact name as the Music sidebar shows it; the first match plays). Both launch Music when it is closed
+- `play` resumes or starts playback; `play_playlist` plays the playlist named by `playlist` (exact name, one of the names `list_playlists` returns; the first match plays). Both launch Music when it is closed
+- `list_playlists` returns the state read-back plus `playlists`, every playlist name in Music's order (a name several playlists share appears once for each); on a closed Music it leaves Music closed and returns `running: false` with no `playlists`
 - `pause` and `stop` halt playback; `next` and `previous` skip tracks
 - `set_shuffle` requires `shuffle` (boolean); `set_repeat` requires `repeat` (`off`, `one`, or `all`)
 - `get_current` only reads
 - Every action returns the state Music reports afterward: `player_state` (`playing`, `paused`, `stopped`, `fast_forwarding`, `rewinding`), `track` (`name`, `artist`, `album`), `shuffle`, and `repeat`; `play_playlist` also returns `playlist`, the name as Music reports it
-- `get_current`, `pause`, and `stop` leave a closed Music closed and return `running: false` with `player_state`, `shuffle`, and `repeat` null; `next`, `previous`, `set_shuffle`, and `set_repeat` fail with `not_running`
+- `get_current`, `list_playlists`, `pause`, and `stop` leave a closed Music closed and return `running: false` with `player_state`, `shuffle`, and `repeat` null; `next`, `previous`, `set_shuffle`, and `set_repeat` fail with `not_running`
 - `track` is `null` when Music has nothing loaded. It is also `null`, with `track_unavailable` saying why, when the player is not stopped but Music refuses to return a track outside the library (Apple Music radio or catalog playback on recent macOS); transport actions still work
 - Scripts Music and requires Automation > Music; the first call shows the macOS consent dialog, and a call that times out while it is open succeeds when retried after answering it
-- Typed errors: `not_running`, `playlist_not_found` (nothing was played), `accessibility_required` (Automation > Music denied)
+- Typed errors: `not_running`, `playlist_not_found` (nothing was played; the hint points to `list_playlists`), `accessibility_required` (Automation > Music denied)
 - System output level belongs to `macos_control_volume`
 
 ---
@@ -158,19 +159,20 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos_take_screenshot` <sub>tool</sub>
 
-- `target`: `screen` (the main display only, the one with the menu bar), `display` (0-based integer `display_index`, default 0: the `index` `macos_manage_displays action=list` reports), `region` (pixel rect, `width`/`height` greater than 0) — no Screen Recording required; `window` (by `app_name`, matched like `macos_manage_windows`: application name, localized name, or process name, ignoring case; captures that app's frontmost on-screen window) requires Screen Recording. When the Screen Recording check can't tell, the window capture still runs and `notice` says why
-- Always saves a full-resolution PNG. Omitting `path` (or passing `""`) writes a new `screenshot-<timestamp>.png` in `MACOS_SCREENSHOT_DIR` (`~/Desktop` when unset), adding `-2`, `-3`, … rather than replacing a file. A custom `path` must end in `.png` (any case); `~/` expands to the home directory; its directory must exist and, with symlinks resolved, lie inside `MACOS_SCREENSHOT_DIR`, `/tmp`, or the home directory. The returned `path` is the resolved one (a `/tmp` path reports under `/private/tmp`)
+- `target`: `screen` (the main display only, the one with the menu bar), `display` (0-based integer `display_index`, default 0: the `index` `macos_manage_displays action=list` reports), `region` (a rect in points in global display coordinates, the space `macos_manage_displays` reports each display's `origin` in and `macos_manage_windows` reports window bounds in: 0,0 is the main display's top-left, and a display to its left or above has negative values; `width`/`height` greater than 0), `window` (by `app_name`, matched like `macos_manage_windows`: application name, localized name, or process name, ignoring case; captures that app's frontmost on-screen window)
+- Every target requires Screen Recording: the check runs before anything is captured, and a denial fails as `screen_recording_required`. When the check can't tell, the capture still runs and `notice` says why
+- Always saves a full-resolution PNG. Omitting `path` (or passing `""`) writes a new `screenshot-<timestamp>.png` in `MACOS_SCREENSHOT_DIR` (`~/Desktop` when unset), adding `-2`, `-3`, … rather than replacing a file. A custom `path` must end in `.png` (any case); `~/` expands to the home directory; its directory must exist and, with symlinks resolved, lie inside `/tmp`, the home directory, or `MACOS_SCREENSHOT_DIR` (checked in that order; while it is unset, `~/Desktop` counts only for a path written under `~/Desktop`, so a `~/Desktop` that is a symlink to a folder outside `/tmp` and the home directory admits only paths written under it). The returned `path` is the resolved one (a `/tmp` path reports under `/private/tmp`)
 - Never replaces an existing entry: a path that already exists fails with `path_exists` unless `overwrite: true`, which replaces only the regular `.png` file found at `path` when the call checks it (never a symbolic link or directory). An entry created at `path` after that check, or put in that file's place, is never replaced and fails with `path_exists`
 - Every call settles within 55 s of its start, the `app_name` lookup included: past that it fails as a Timeout (`-32004`) and writes nothing. A cancelled request writes nothing either
 - `include_data=true` returns a JPEG preview, longer side at most 1024 px (a smaller capture keeps its own size), quality 70: as the first `content[]` block (`image/jpeg`) and as base64 `preview` plus `preview_width`/`preview_height` in `structuredContent`
-- `width`/`height` (and the preview's) are read from the image file headers
-- Typed errors: `screen_recording_required`, `window_not_found` (an app that is not running, or one with no on-screen window; an osascript timeout or failure during the window lookup keeps its own error), `display_not_found`, `path_not_writable` (also a directory that cannot be resolved or searched, an over-long one included), `path_exists`; a `path` not ending in `.png`, holding U+0000, or whose file name or full resolved path is longer than the file system allows (255 bytes per name, 1024 for the whole path) is rejected as `-32602` with reason `invalid_arguments`
+- `width`/`height` (and the preview's) are pixels, read from the image file headers: the captured area in points × the captured display's `scale_factor` from `macos_manage_displays action=list` (display 0 for `target=screen`). A window capture includes the window's shadow, and a region spanning displays with different `scale_factor` values has no single factor
+- Typed errors: `screen_recording_required`, `window_not_found` (an app that is not running, or one with no on-screen window; an osascript timeout or failure during the window lookup keeps its own error), `display_not_found`, `path_not_writable` (also a directory that cannot be resolved or searched, an over-long one included, and a folder macOS denied the host app with EPERM, whose hint names System Settings > Privacy & Security > Files & Folders), `path_exists`; a `path` not ending in `.png`, holding U+0000, or whose file name or full resolved path is longer than the file system allows (255 bytes per name, 1024 for the whole path) is rejected as `-32602` with reason `invalid_arguments`
 
 ---
 
 ### `macos_manage_displays` <sub>tool</sub>
 
-- `list` — per display: `index` (0-based position in `NSScreen.screens`; the `display_index` `macos_take_screenshot` and `macos_manage_windows` use; `null` for a display with no NSScreen entry, such as a disabled one), persistent ID, type (`"MacBook built in screen"` or `"<N> inch external screen"`), resolution, refresh rate (`"N/A"` when macOS reports none), origin, rotation, scaling, and enabled state (also `true` for a display mirroring another); plus `current_config` (a displayplacer command that reproduces the active arrangement) and `layouts` (the names configured in `MACOS_DISPLAY_LAYOUTS`, `[]` when none). When `MACOS_DISPLAY_LAYOUTS` is invalid, `list` still succeeds, omits `layouts`, and its `notice` names the variable. When the NSScreen read fails, `index` is omitted and `notice` says why; that includes a read that waited 15 s for concurrent System Events enumerations to finish
+- `list` — per display: `index` (0-based position in `NSScreen.screens`; the `display_index` `macos_take_screenshot` and `macos_manage_windows` use; `null` for a display with no NSScreen entry, such as a disabled one), `scale_factor` (the display's `backingScaleFactor`, pixels per point: 2 for a Retina display; `null` where `index` is `null`), persistent ID, type (`"MacBook built in screen"` or `"<N> inch external screen"`), resolution and origin (both in points in global display coordinates), refresh rate (`"N/A"` when macOS reports none), rotation, scaling, and enabled state (also `true` for a display mirroring another); plus `current_config` (a displayplacer command that reproduces the active arrangement) and `layouts` (the names configured in `MACOS_DISPLAY_LAYOUTS`, `[]` when none). When `MACOS_DISPLAY_LAYOUTS` is invalid, `list` still succeeds, omits `layouts`, and its `notice` names the variable. When the NSScreen read fails, `index` and `scale_factor` are omitted and `notice` says why; that includes a read that waited 15 s for concurrent System Events enumerations to finish
 - `apply_layout` — activates a named preset from `MACOS_DISPLAY_LAYOUTS` (one of the names `list` returns as `layouts`); raw displayplacer args are never accepted from the caller. An invalid `MACOS_DISPLAY_LAYOUTS` fails `apply_layout` as `layouts_invalid` (`ConfigurationError`), never `layout_not_found`
 - Requires displayplacer CLI (`brew install displayplacer`); typed errors `displayplacer_not_found`, `displayplacer_output_unrecognized`, `layout_not_found`, `layouts_invalid`
 - A failed displayplacer run (non-zero exit, signal, timeout) fails the call instead of returning what it printed; a display block missing a line whose value the listing returns, or a listing missing the arrangement command, fails as `displayplacer_output_unrecognized`. displayplacer 1.3.0 and 1.4.0 are both read
@@ -187,9 +189,11 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos_manage_focus` <sub>tool</sub>
 
-- `get` — best-effort; reads `~/Library/DoNotDisturb/DB/Assertions.json` and returns `status: "active" | "inactive" | "unknown"`; `unknown` (with a `reason`) when that file cannot be read or parsed, which can happen when the server process is not allowed to read it; a cancelled call settles as cancelled, never as `unknown`
-- `set` — runs a shortcut named `"Set Focus"` from your Shortcuts library and passes it `{"mode": …, "enabled": …}` as JSON input. The shortcut is not built in: create it with Get Dictionary from Input feeding the Set Focus action. `mode` must exactly match a configured Focus name, including case (e.g. `"Do Not Disturb"`, `"Work"`); `enabled` defaults to `true`. The result echoes `mode` and `enabled`; `success: true` means the shortcut finished without error (the Focus state is not read back)
-- Typed errors: `shortcuts_unavailable` (shortcuts CLI missing, or no shortcut named "Set Focus"), `shortcut_failed` (the shortcut exited with an error; carries its error text). A shortcut still running after 15 s is stopped and reported as a `Timeout` error; a cancelled call stops the run and settles as cancelled
+- `get` and `list` read the Focus database in `~/Library/DoNotDisturb/DB`, which macOS lets only a process with Full Disk Access read (`macos_check_permissions` does not report it)
+- `get` — best-effort; reads `~/Library/DoNotDisturb/DB/Assertions.json` and returns `status: "active" | "inactive" | "unknown"`, with `mode` (the identifier) and `mode_name` (the name `set` takes; `null` when `ModeConfigurations.json` has no entry for it or can't be read). `unknown` (with a `reason`) when that file cannot be parsed or read; without Full Disk Access the `reason` names it and says to quit and reopen the host app after granting. `inactive` carries a `notice`: a Focus turned on by hand records an assertion, but one started by its schedule or another trigger can be on without one, and triggers are not evaluated. A cancelled call settles as cancelled, never as `unknown`
+- `list` — `modes: [{ name, identifier }]` for every Focus in `ModeConfigurations.json`, in file order (`name` is `null` for an entry without one). Without Full Disk Access it fails as `full_disk_access_required`; any other read or parse failure is an error, never `modes: []`
+- `set` — runs a shortcut named `"Set Focus"` from your Shortcuts library and passes it `{"mode": …, "enabled": …}` as JSON input. The shortcut is not built in: create it with Get Dictionary from Input feeding the Set Focus action. `mode` must exactly match a configured Focus name, including case, one of the names `list` returns (e.g. `"Do Not Disturb"`, `"Work"`); `enabled` defaults to `true`. The result echoes `mode` and `enabled`; `success: true` means the shortcut finished without error (the Focus state is not read back)
+- Typed errors: `full_disk_access_required` (`list` without Full Disk Access), `shortcuts_unavailable` (shortcuts CLI missing, or no shortcut named "Set Focus"), `shortcut_failed` (the shortcut exited with an error; carries its error text). A shortcut still running after 15 s is stopped and reported as a `Timeout` error; a cancelled call stops the run and settles as cancelled
 
 ---
 
@@ -221,7 +225,7 @@ Resource data is also accessible via `macos_get_info`, `macos_control_audio` (`a
 
 ### `macos://displays` <sub>resource</sub>
 
-- Connected display inventory — `index`, persistent IDs, type, resolution, origin, rotation, scaling, enabled state, plus `current_config` — as `application/json`; carries `notice` (and no `index`) when the NSScreen read fails
+- Connected display inventory — `index`, `scale_factor`, persistent IDs, type, resolution and origin in points, rotation, scaling, enabled state, plus `current_config` — as `application/json`; carries `notice` (and no `index` or `scale_factor`) when the NSScreen read fails
 - Requires displayplacer CLI
 - Same data is also reachable via `macos_manage_displays` (`action=list`)
 
@@ -297,7 +301,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 ### Prerequisites
 
 - macOS 13 (Ventura) or higher.
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 - Optional: [SwitchAudioSource](https://github.com/deweller/switchaudio-osx) for audio routing (`brew install switchaudio-osx`).
 - Optional: [displayplacer](https://github.com/jakehilborn/displayplacer) 1.3.0 or 1.4.0 for display management (`brew install displayplacer`).
 
@@ -308,10 +312,11 @@ Some tools require macOS permissions granted to the terminal or MCP host app:
 | Permission | Required by |
 |:-----------|:------------|
 | Accessibility | `macos_manage_windows` (every action, `list` included), `macos_manage_apps` (hide/show; `frontmost` reads `window_title` with it), `macos_control_system` (lock keystroke; without it, lock starts the screen saver, which locks only when a password is required immediately) |
-| Automation > System Events | `macos_manage_windows`, `macos_manage_apps` (every action but `launch` and `quit`), `macos_control_appearance`, `macos_control_system` (lock keystroke; same screen-saver fallback); `macos_check_permissions` cannot report it |
-| Screen Recording | `macos_take_screenshot` with `target=window` |
+| Automation > System Events | `macos_manage_windows`, `macos_manage_apps` (`frontmost`, `force_quit`, `hide`, `show`; `list`, `launch`, and `quit` need none), `macos_control_appearance`, `macos_control_system` (lock keystroke; same screen-saver fallback); `macos_check_permissions` reports it only while System Events is running |
+| Screen Recording | `macos_take_screenshot`, every target (System Settings > Privacy & Security > Screen & System Audio Recording, Screen Recording on older macOS) |
 | Automation > Finder | `macos_manage_finder` with `action=frontmost_path`, `get_selection`, or `trash` |
-| Automation > Music | `macos_control_music` (every action; `get_current`, `pause`, and `stop` on a closed Music script nothing) |
+| Automation > Music | `macos_control_music` (every action; `get_current`, `list_playlists`, `pause`, and `stop` on a closed Music script nothing) |
+| Full Disk Access | `macos_manage_focus` `get` (without it, `status` is `unknown` with a `reason`) and `list` (without it, `full_disk_access_required`); `macos_check_permissions` cannot report it |
 
 Use `macos_check_permissions` to check current status before running permission-gated operations.
 
@@ -395,12 +400,12 @@ bun run lint:mcp   # Validate MCP definitions against spec
 | `src/mcp-server/tools/definitions/` | 14 tool definitions (`macos-*.tool.ts`) |
 | `src/mcp-server/tools/action-requirements.ts` | Per-action argument requirements — enforced by the input schema and advertised in `inputSchema` |
 | `src/mcp-server/resources/definitions/` | 3 resource definitions (`macos-*.resource.ts`) |
-| `src/services/osascript/` | osascript JXA + AppleScript runner with configurable timeout and permission-denial classification, AppleScript string literals for caller text, and the running-app name resolver |
+| `src/services/osascript/` | osascript JXA + AppleScript runner with configurable timeout and permission-denial classification, AppleScript string literals for caller text, and the NSWorkspace running-app list and name resolver |
 | `src/utils/exec-failure.ts` | Caller-safe error text for a failed CLI call (never the command line) |
 | `src/services/binaries/binary-paths.ts` | Absolute paths of the macOS system binaries, and the per-call PATH + Homebrew lookup for displayplacer and SwitchAudioSource |
-| `src/services/permissions/` | Prompt-free Accessibility, Screen Recording, Automation > Finder, and Automation > Music checks |
+| `src/services/permissions/` | Prompt-free Accessibility, Screen Recording, Automation > System Events, Automation > Finder, and Automation > Music checks |
 | `src/services/audio/` | SwitchAudioSource device listing and switching |
-| `src/services/display/` | displayplacer list and apply-layout, plus the JXA NSScreen read that gives each display its index |
+| `src/services/display/` | displayplacer list and apply-layout, plus the JXA NSScreen read that gives each display its index and scale_factor, and the display schema the tool and resource share |
 | `src/services/screencapture/` | screencapture PNG capture, path checks and no-replace placement, sips JPEG preview |
 | `src/services/system-info/` | Battery, Wi-Fi, version, and display count via pmset/networksetup/ifconfig/sw_vers/system_profiler; hostname and uptime via `node:os` |
 | `tests/tools/` | Tool tests mirroring definitions |

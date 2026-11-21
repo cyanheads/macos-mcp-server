@@ -2,10 +2,11 @@
 
 **Server:** macos-mcp-server
 **Version:** 0.4.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
-**Engines:** Bun ≥1.4.0, Node ≥24.0.0
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.22`
+**Engines:** Bun ≥1.4.4, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.4.0
 **Zod:** ^4.6.7
+**Vitest:** `~5.0.5`, held below 5.1: 5.1's forks-pool watchdog calls `child.channel.unref()`, which Bun's `node:child_process` lacks ([oven-sh/bun#33593](https://github.com/oven-sh/bun/issues/33593)), so no test worker starts under `bun --bun run test`. Lift the hold once a Bun release fixes it.
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -252,16 +253,16 @@ src/
     binaries/
       binary-paths.ts                   # SYSTEM_BINARIES absolute paths; findThirdPartyBinary() PATH + Homebrew lookup
     display/
-      display-service.ts                # displayplacer list and apply-layout, JXA NSScreen read for each display's index
+      display-service.ts                # displayplacer list and apply-layout, JXA NSScreen read for each display's index and scale_factor; the display schema macos_manage_displays and macos://displays share
     osascript/
       applescript-literal.ts            # appleScriptLiteral() — AppleScript string literal for caller text
       foreground-processes.ts           # FOREGROUND_PROCESSES_JXA — processTable / processByPid / foregroundProcesses, each process addressed uniquely
       osascript-exclusion.ts            # runExclusive() — NSScreen reads and System Events process enumerations never overlap
       osascript-service.ts              # osascript JXA + AppleScript runner with timeout, denial classification
       permission-denial.ts              # isPermissionDenial() — recognizes the service's accessibility_required
-      resolve-app-pids.ts               # resolveAppPids() — app_name to running PIDs from NSWorkspace
+      resolve-app-pids.ts               # readRunningApps() — NSWorkspace running-application list (macos_manage_apps list); resolveAppPids() — app_name to running PIDs
     permissions/
-      permission-probes.ts              # prompt-free Accessibility, Screen Recording, Automation > Finder and Automation > Music checks
+      permission-probes.ts              # prompt-free Accessibility, Screen Recording, Automation > System Events, Finder and Music checks
     screencapture/
       screencapture-service.ts          # screencapture PNG capture, path checks and no-replace placement, sips JPEG preview
     system-info/
@@ -384,7 +385,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 ## Bundling
 
-`npm run bundle` produces a `.mcpb` extension bundle for one-click install in Claude Desktop. `mcpb pack` reads `.mcpbignore`, not `.gitignore`, so every root path the bundle must not ship — source, tests, docs, caches, logs, agent docs, plugin manifests, gitignored local files — needs a root-anchored line there (`/docs/`, never `docs/`, which also strips `node_modules/*/docs/`); `lint:packaging` names each missing or unanchored line. Root `skills/` ships on purpose. The pack step is followed by `scripts/clean-mcpb.ts`, which prunes dev dependencies (`mcpb clean`) and strips four classes of `node_modules/**` content that root-anchored `.mcpbignore` patterns cannot reach: dependency-shipped agent docs (`framework-skills/`, `skills/`, `.claude/`, `.agents/` at a package root, and `SKILL.md`) — a directory of those names deeper in a package is runtime code, such as the MCP SDK's `dist/ext/skills/`, and stays; platform-specific native bindings, which would otherwise lock the bundle to the platform it was packed on; node-gyp build output beside a `binding.gyp` (`config.gypi`, Makefiles, `obj.target/`, `.deps/`, object files and debug symbols), which records the packing machine's paths — compiled `*.node` addons stay; and build-only package files — the framework's `changelog/`, `scripts/`, `templates/`, `CLAUDE.md`, `AGENTS.md`, and config bases (`biome.json`, `vitest.config.base.mjs`, `config/tsconfig.base.json`), and `better-sqlite3`'s `deps/` and `src/` C sources. A server using DataCanvas therefore ships a portable bundle without the DuckDB native — `@duckdb/node-api` is an optional peer loaded lazily, so canvas tools report an actionable install hint and every other tool works normally. MCPB is stdio-only — HTTP and Cloudflare Workers deployments are unaffected. Consumers who don't need it can delete `manifest.json` and `.mcpbignore`; `lint:packaging` skips cleanly.
+`npm run bundle` produces a `.mcpb` extension bundle for one-click install in Claude Desktop. `mcpb pack` reads `.mcpbignore`, not `.gitignore`, so every root path the bundle must not ship — source, tests, docs, caches, logs, agent docs, plugin manifests, gitignored local files — needs a root-anchored line there (`/docs/`, never `docs/`, which also strips `node_modules/*/docs/`); `lint:packaging` names each missing or unanchored line. Root `skills/` ships on purpose. The pack step is followed by `scripts/clean-mcpb.ts`, which prunes dev dependencies (`mcpb clean`) and strips four classes of `node_modules/**` content that root-anchored `.mcpbignore` patterns cannot reach: dependency-shipped agent docs — `framework-skills/`, `skills/`, `.claude/`, `.agents/`, `AGENTS.md`, and `CLAUDE.md` at a package's root, and `SKILL.md` anywhere (a directory of those names deeper in a package is runtime code, such as the MCP SDK's `dist/ext/skills/`, and stays); platform-specific native bindings, which would otherwise lock the bundle to the platform it was packed on; node-gyp build output beside a `binding.gyp` (`config.gypi`, Makefiles, `obj.target/`, `.deps/`, object files and debug symbols), which records the packing machine's paths — compiled `*.node` addons stay; and build-only package files — the framework's `changelog/`, `scripts/`, `templates/`, and config bases (`biome.json`, `vitest.config.base.mjs`, `config/tsconfig.base.json`), and `better-sqlite3`'s `deps/` and `src/` C sources. A server using DataCanvas therefore ships a portable bundle without the DuckDB native — `@duckdb/node-api` is an optional peer loaded lazily, so canvas tools report an actionable install hint and every other tool works normally. MCPB is stdio-only — HTTP and Cloudflare Workers deployments are unaffected. Consumers who don't need it can delete `manifest.json` and `.mcpbignore`; `lint:packaging` skips cleanly.
 
 **Adding an env var requires both files:** `server.json` (registry discovery, `environmentVariables[]`) and `manifest.json` (bundle install UX, `mcp_config.env` + `user_config`). `lint:packaging` (run by `devcheck`) verifies the env var names match, that every `user_config` option is wired into `mcp_config.env` as `"X": "${user_config.X}"` (the host substitutes nothing else — `"${X}"` reaches the server as that literal string), and that an optional string option carries `"default": ""`.
 
