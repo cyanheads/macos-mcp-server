@@ -18,7 +18,7 @@ import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Shape of the mocked `execFile`. The service wraps it in `promisify`, and the
@@ -87,14 +87,18 @@ function fakeMusic(initial: FakeMusicState) {
     if (state.deny?.property === property) throw appleEventError(state.deny.errorNumber);
     return value;
   };
+  /** A playlist specifier by name: it reaches the first playlist of that name, as Music's does. */
   const playlist = (name: string) => {
-    const match = state.playlists?.find((p) => p === name);
+    const index = state.playlists?.indexOf(name) ?? -1;
     return {
       requested: name,
-      exists: read(`playlist(${name}).exists`, match !== undefined),
-      name: read(`playlist(${name}).name`, match),
+      index,
+      exists: read(`playlist(${name}).exists`, index !== -1),
+      name: read(`playlist(${name}).name`, state.playlists?.[index]),
     };
   };
+  /** The position in `playlists` of the playlist the last play_playlist started, or -1 for none. */
+  let playedIndex = -1;
   const trackProperty = (property: 'name' | 'artist' | 'album') => () => {
     events.push(`currentTrack.${property}`);
     if (state.deny?.property === `currentTrack.${property}`) {
@@ -110,15 +114,20 @@ function fakeMusic(initial: FakeMusicState) {
       events.push('running');
       return state.running;
     },
-    play: (spec?: { requested: string }) => {
+    play: (spec?: { requested: string; index: number }) => {
       events.push(spec ? `play(${spec.requested})` : 'play');
+      if (spec) playedIndex = spec.index;
       state.running = true;
     },
     pause: () => events.push('pause'),
     stop: () => events.push('stop'),
     nextTrack: () => events.push('nextTrack'),
     previousTrack: () => events.push('previousTrack'),
-    playlists: { byName: (name: string) => playlist(name) },
+    // The application's playlists collection: a bulk name read, and a lookup by name.
+    playlists: {
+      name: () => read('playlists.name', [...(state.playlists ?? [])])(),
+      byName: (name: string) => playlist(name),
+    },
     currentTrack: {
       name: trackProperty('name'),
       artist: trackProperty('artist'),
@@ -137,7 +146,7 @@ function fakeMusic(initial: FakeMusicState) {
       return true;
     },
   });
-  return { music, events };
+  return { music, events, played: () => playedIndex };
 }
 
 /**
@@ -155,6 +164,13 @@ function runJxaScript(script: string, fake: ReturnType<typeof fakeMusic>): unkno
   expect(applications.every((name) => name === 'Music')).toBe(true);
   return result;
 }
+
+/** What the list_playlists script prints when run against `fake`, parsed. */
+const listPlaylistsRead = (fake: ReturnType<typeof fakeMusic>) =>
+  JSON.parse(String(runJxaScript(musicScript({ action: 'list_playlists' }), fake))) as Record<
+    string,
+    unknown
+  >;
 
 const PLAYING_TRACK = {
   name: 'Clair de Lune',
@@ -174,6 +190,7 @@ const RUNNING: FakeMusicState = {
 describe('the generated JXA', () => {
   describe.each<[MusicInput['action'], MusicInput]>([
     ['get_current', { action: 'get_current' }],
+    ['list_playlists', { action: 'list_playlists' }],
     ['pause', { action: 'pause' }],
     ['stop', { action: 'stop' }],
     ['next', { action: 'next' }],
@@ -232,6 +249,56 @@ describe('the generated JXA', () => {
       'currentTrack.artist',
       'currentTrack.album',
     ]);
+  });
+
+  it('list_playlists with Music running reads state, then every playlist name in order, duplicates included, sending no command', () => {
+    const playlists = ['Library', 'Focus', 'Today’s Hits', 'Focus', 'Running'];
+    const fake = fakeMusic({ ...RUNNING, playlists });
+    expect(listPlaylistsRead(fake)).toEqual({
+      running: true,
+      state: 'playing',
+      shuffle: false,
+      repeat: 'off',
+      track: PLAYING_TRACK,
+      playlists,
+    });
+    expect(fake.events).toEqual([
+      'running',
+      'playerState',
+      'shuffleEnabled',
+      'songRepeat',
+      'currentTrack.name',
+      'currentTrack.artist',
+      'currentTrack.album',
+      'playlists.name',
+    ]);
+  });
+
+  it('every name list_playlists returns makes play_playlist resolve the first playlist of that name in the same collection', () => {
+    const playlists = ['Focus', 'Mix', 'Focus', 'Mix', 'Solo'];
+    const listed = listPlaylistsRead(fakeMusic({ ...RUNNING, playlists })).playlists as string[];
+    expect(listed).toEqual(playlists);
+    for (const name of listed) {
+      const fake = fakeMusic({ ...RUNNING, playlists });
+      expect(JSON.parse(String(runJxaScript(playlistLookupScript(name), fake)))).toBe(name);
+      runJxaScript(musicScript({ action: 'play_playlist', playlist: name }), fake);
+      expect(fake.played()).toBe(playlists.indexOf(name));
+    }
+  });
+
+  it('list_playlists with Music running and no playlists reads an empty list', () => {
+    expect(listPlaylistsRead(fakeMusic({ ...RUNNING, playlists: [] })).playlists).toEqual([]);
+  });
+
+  it('a failure on the playlist-name read propagates with its errorNumber', () => {
+    const fake = fakeMusic({
+      ...RUNNING,
+      playlists: ['Focus'],
+      deny: { property: 'playlists.name', errorNumber: -1743 },
+    });
+    expect(() => runJxaScript(musicScript({ action: 'list_playlists' }), fake)).toThrow(
+      expect.objectContaining({ errorNumber: -1743 }),
+    );
   });
 
   it.each<[MusicInput, string]>([
@@ -308,7 +375,11 @@ describe('the generated JXA', () => {
   );
 
   describe('compiles as JXA', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'macos-music-jxa-'));
+    /** Made in beforeAll, never at collection, so a run that skips this block leaves nothing behind. */
+    let dir = '';
+    beforeAll(() => {
+      dir = mkdtempSync(join(tmpdir(), 'macos-music-jxa-'));
+    });
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
     const SCRIPTS: Array<[string, string]> = [
@@ -323,6 +394,7 @@ describe('the generated JXA', () => {
           { action: 'set_shuffle', shuffle: false },
           { action: 'set_repeat', repeat: 'all' },
           { action: 'get_current' },
+          { action: 'list_playlists' },
         ] satisfies MusicInput[]
       ).map((input): [string, string] => [input.action, musicScript(input)]),
       ...PLAYLIST_NAMES.map((name): [string, string] => [
@@ -413,6 +485,10 @@ const running = (fields: {
     track: fields.track === undefined ? PLAYING_TRACK : fields.track,
   });
 
+/** The line the list_playlists script prints: the running state plus `playlists`. */
+const runningWithPlaylists = (playlists: unknown[], fields: Parameters<typeof running>[0]) =>
+  JSON.stringify({ ...JSON.parse(running(fields)), playlists });
+
 const NOT_RUNNING = '{"running":false}';
 
 /** The scripts osascript ran, in order. */
@@ -453,7 +529,10 @@ describe('macosControlMusic', () => {
     expect(macosControlMusic.description).toContain('Automation consent dialog');
   });
 
-  describe.each(['get_current', 'pause', 'stop'])('%s with Music closed', (action) => {
+  /** The actions that report a closed Music rather than launch it or fail. */
+  const LEAVE_CLOSED = ['get_current', 'list_playlists', 'pause', 'stop'];
+
+  describe.each(LEAVE_CLOSED)('%s with Music closed', (action) => {
     it('reports running false on both surfaces after one guarded script', async () => {
       answer({ main: NOT_RUNNING });
       const result = await call({ action });
@@ -639,6 +718,7 @@ describe('macosControlMusic', () => {
     [{ action: 'play' }, 15_000],
     [{ action: 'pause' }, 10_000],
     [{ action: 'get_current' }, 10_000],
+    [{ action: 'list_playlists' }, 10_000],
   ])(
     '%j runs one JXA process bounded at %i ms, with the caller’s signal',
     async (args, timeout) => {
@@ -724,6 +804,85 @@ describe('macosControlMusic', () => {
     });
   });
 
+  describe('list_playlists', () => {
+    const PLAYLISTS = ['Library', 'Focus', 'Focus', 'Running'];
+
+    it('reports every playlist name in order, duplicates included, beside the state, on both surfaces after one guarded script', async () => {
+      answer({ main: runningWithPlaylists(PLAYLISTS, { state: 'paused' }) });
+      const result = await call({ action: 'list_playlists' });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        action: 'list_playlists',
+        running: true,
+        player_state: 'paused',
+        track: PLAYING_TRACK,
+        shuffle: false,
+        repeat: 'off',
+        playlists: PLAYLISTS,
+      });
+      expect(contentText(result).split('\n')).toEqual([
+        '**action:** list_playlists',
+        '**Running:** yes',
+        '**Player state:** paused',
+        '**Track:** `Clair de Lune`',
+        '**Artist:** `Claude Debussy`',
+        '**Album:** `Suite bergamasque`',
+        '**Shuffle:** off',
+        '**Repeat:** off',
+        '## Playlists (4)',
+        '- `Library`',
+        '- `Focus`',
+        '- `Focus`',
+        '- `Running`',
+      ]);
+      expect(scripts()).toEqual([musicScript({ action: 'list_playlists' })]);
+      expect(scripts()[0]).toContain(
+        'if (!music.running()) return JSON.stringify({ running: false });',
+      );
+      expect(scripts()[0]).not.toMatch(
+        /music\.(play|pause|stop|nextTrack|previousTrack)\(|music\.\w+ = /,
+      );
+    });
+
+    it('reports an empty playlists list as [] on both surfaces', async () => {
+      answer({ main: runningWithPlaylists([], { state: 'stopped', track: null }) });
+      const result = await call({ action: 'list_playlists' });
+      expect(result.structuredContent).toMatchObject({ running: true, playlists: [] });
+      expect(contentText(result).split('\n').at(-1)).toBe('## Playlists (0)');
+    });
+
+    it('a playlist-name read that is not a list of names is an internal error, not a guess', async () => {
+      answer({ main: runningWithPlaylists([5], { state: 'playing' }) });
+      const result = await call({ action: 'list_playlists' });
+      expect(errorOf(result)).toMatchObject({
+        code: JsonRpcErrorCode.InternalError,
+        message: 'The Music script printed output in an unexpected shape.',
+      });
+    });
+
+    it('an Automation > Music denial is the service’s accessibility_required', async () => {
+      answer({ main: { stderr: MUSIC_DENIED } });
+      const result = await call({ action: 'list_playlists' });
+      expect(errorOf(result)).toMatchObject({
+        code: JsonRpcErrorCode.Forbidden,
+        data: { reason: 'accessibility_required' },
+      });
+      expect(result.structuredContent).not.toHaveProperty('playlists');
+    });
+
+    it('is the source the playlist field, the playlist_not_found recovery, and the descriptions name', () => {
+      const { action, playlist } = macosControlMusic.input.shape;
+      expect(playlist.description).toBe(
+        'Exact name of the playlist to play, as action=list_playlists returns it; the first playlist Music matches by that name plays. Required for action=play_playlist.',
+      );
+      expect(action.description).toContain('list_playlists');
+      expect(declaredRecovery('playlist_not_found')).toBe(
+        'Call macos_control_music with action=list_playlists and retry with one of the names it returns; nothing was played.',
+      );
+      expect(macosControlMusic.description).toContain('list_playlists');
+    });
+  });
+
   describe('format renders text Music carries so a CommonMark parse reads it back exactly', () => {
     const FUZZ = [
       'line one\nline two',
@@ -762,6 +921,33 @@ describe('macosControlMusic', () => {
           'Repeat: one',
           `Playlist: pl ${value}`,
         ].join('\n'),
+      ]);
+    });
+
+    it.each(FUZZ)('list_playlists name %j', (value) => {
+      const text = macosControlMusic.format!({
+        action: 'list_playlists',
+        running: true,
+        player_state: 'stopped',
+        track: null,
+        shuffle: false,
+        repeat: 'off',
+        playlists: [value, `2 ${value}`],
+      })
+        .map((b) => ('text' in b ? b.text : ''))
+        .join('\n');
+      expect(commonMarkBlocks(text)).toEqual([
+        [
+          'action: list_playlists',
+          'Running: yes',
+          'Player state: stopped',
+          'Track: (none)',
+          'Shuffle: off',
+          'Repeat: off',
+        ].join('\n'),
+        'Playlists (2)',
+        value,
+        `2 ${value}`,
       ]);
     });
   });

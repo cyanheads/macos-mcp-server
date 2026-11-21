@@ -1,5 +1,5 @@
 /**
- * @fileoverview Music playback tool — play, pause, stop, skip, play a playlist, set shuffle or repeat, and read what the Music app is playing.
+ * @fileoverview Music playback tool — play, pause, stop, skip, play a playlist, set shuffle or repeat, read what the Music app is playing, and list its playlist names.
  * @module mcp-server/tools/definitions/macos-control-music
  */
 
@@ -61,7 +61,10 @@ const READ_STATE_JXA = `function readState(music) {
   return { running: true, state, shuffle, repeat, track };
 }`;
 
-/** What every Music script prints: Music not running, or the state read back after the command. */
+/**
+ * What every Music script prints: Music not running, or the state read back
+ * after the command, plus every playlist name for list_playlists.
+ */
 const MusicStateSchema = z.union([
   z.object({ running: z.literal(false) }),
   z.object({
@@ -72,6 +75,7 @@ const MusicStateSchema = z.union([
     track: z
       .object({ name: z.string(), artist: z.string().nullable(), album: z.string().nullable() })
       .nullable(),
+    playlists: z.array(z.string()).optional(),
   }),
 ]);
 
@@ -91,15 +95,16 @@ const MusicInputSchema = withActionRequirements(
         'set_shuffle',
         'set_repeat',
         'get_current',
+        'list_playlists',
       ])
       .describe(
-        'play resumes or starts playback; play_playlist plays the named playlist; pause and stop halt it; next and previous skip tracks; set_shuffle and set_repeat change the play order; get_current only reads.',
+        'play resumes or starts playback; play_playlist plays the named playlist; pause and stop halt it; next and previous skip tracks; set_shuffle and set_repeat change the play order; get_current only reads; list_playlists reads the same state plus every playlist name.',
       ),
     playlist: z
       .string()
       .optional()
       .describe(
-        'Exact name of the playlist to play, as Music shows it in its sidebar; the first playlist with that name plays. Required for action=play_playlist.',
+        'Exact name of the playlist to play, as action=list_playlists returns it; the first playlist Music matches by that name plays. Required for action=play_playlist.',
       ),
     shuffle: z
       .boolean()
@@ -119,9 +124,10 @@ const MusicInputSchema = withActionRequirements(
 type MusicInput = z.infer<typeof MusicInputSchema>;
 
 /**
- * The JXA statement that carries out the action; get_current has none. Caller
- * text (the playlist name) enters only as a JSON string literal, and `shuffle`
- * and `repeat` are a boolean and an enum member by the time they get here.
+ * The JXA statement that carries out the action; get_current and
+ * list_playlists have none. Caller text (the playlist name) enters only as a
+ * JSON string literal, and `shuffle` and `repeat` are a boolean and an enum
+ * member by the time they get here.
  */
 function commandFor(input: MusicInput): string {
   switch (input.action) {
@@ -142,6 +148,7 @@ function commandFor(input: MusicInput): string {
     case 'set_repeat':
       return `music.songRepeat = ${JSON.stringify(suppliedArg(input.repeat, 'repeat'))};`;
     case 'get_current':
+    case 'list_playlists':
       return '';
   }
 }
@@ -151,10 +158,16 @@ function commandFor(input: MusicInput): string {
  * every action but play and play_playlist it first checks
  * `Application('Music').running()`, which asks Launch Services and sends Music
  * no Apple event, and prints `{ running: false }` without touching Music when
- * it is closed.
+ * it is closed. list_playlists adds one bulk read of every name in
+ * `music.playlists`, the collection play_playlist looks a name up in, in
+ * Music's order.
  */
 export function musicScript(input: MusicInput): string {
   const command = commandFor(input);
+  const read =
+    input.action === 'list_playlists'
+      ? '{ ...readState(music), playlists: music.playlists.name() }'
+      : 'readState(music)';
   return [
     READ_STATE_JXA,
     '(() => {',
@@ -163,7 +176,7 @@ export function musicScript(input: MusicInput): string {
       ? []
       : ['  if (!music.running()) return JSON.stringify({ running: false });']),
     ...(command ? [`  ${command}`] : []),
-    '  return JSON.stringify(readState(music));',
+    `  return JSON.stringify(${read});`,
     '})();',
   ].join('\n');
 }
@@ -181,7 +194,7 @@ export function playlistLookupScript(name: string): string {
 export const macosControlMusic = tool('macos_control_music', {
   title: 'Control macOS Music',
   description:
-    "Control playback in the Music app and read what it is playing: play, pause, stop, skip to the next or previous track, play a playlist by its exact name, set shuffle or repeat, or get the current state. Every action returns the state Music reports afterward — player state, current track, shuffle, and repeat. play and play_playlist launch Music when it is closed; get_current, pause, and stop leave it closed and report running=false; next, previous, set_shuffle, and set_repeat fail with not_running. track is null when Music has nothing loaded, and also, with track_unavailable saying why, when Music refuses to name a track outside the library (radio or catalog playback on recent macOS). The first call shows macOS's Automation consent dialog for Music; if the call times out while it is open, answer the dialog and retry. macos_check_permissions reports the grant as automation_music. System output level belongs to macos_control_volume.",
+    "Control playback in the Music app and read what it is playing: play, pause, stop, skip to the next or previous track, play a playlist by its exact name, set shuffle or repeat, get the current state, or list every playlist name (list_playlists, the source of play_playlist's names). Every action returns the state Music reports afterward — player state, current track, shuffle, and repeat. play and play_playlist launch Music when it is closed; get_current, list_playlists, pause, and stop leave it closed and report running=false; next, previous, set_shuffle, and set_repeat fail with not_running. track is null when Music has nothing loaded, and also, with track_unavailable saying why, when Music refuses to name a track outside the library (radio or catalog playback on recent macOS). The first call shows macOS's Automation consent dialog for Music; if the call times out while it is open, answer the dialog and retry. macos_check_permissions reports the grant as automation_music. System output level belongs to macos_control_volume.",
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: MusicInputSchema,
   output: z.object({
@@ -189,7 +202,7 @@ export const macosControlMusic = tool('macos_control_music', {
     running: z
       .boolean()
       .describe(
-        'True when Music is running. False only for get_current, pause, and stop on a closed Music, which leave it closed.',
+        'True when Music is running. False only for get_current, list_playlists, pause, and stop on a closed Music, which leave it closed.',
       ),
     player_state: z
       .enum(['playing', 'paused', 'stopped', 'fast_forwarding', 'rewinding'])
@@ -227,6 +240,12 @@ export const macosControlMusic = tool('macos_control_music', {
       .string()
       .optional()
       .describe('The playlist name as Music reports it. Present for action=play_playlist.'),
+    playlists: z
+      .array(z.string().describe('A playlist name, usable as playlist for action=play_playlist.'))
+      .optional()
+      .describe(
+        "Every playlist name in Music's playlists collection, in Music's order; a name several playlists share appears once for each, and play_playlist plays the first of them. Present for action=list_playlists while Music is running.",
+      ),
   }),
   errors: [
     {
@@ -241,7 +260,7 @@ export const macosControlMusic = tool('macos_control_music', {
       code: JsonRpcErrorCode.NotFound,
       when: 'play_playlist names a playlist Music does not have.',
       recovery:
-        'Check the playlist name against the Music sidebar and retry with its exact name; nothing was played.',
+        'Call macos_control_music with action=list_playlists and retry with one of the names it returns; nothing was played.',
     },
     {
       reason: 'accessibility_required',
@@ -314,6 +333,7 @@ export const macosControlMusic = tool('macos_control_music', {
       shuffle: read.shuffle,
       repeat: read.repeat,
       ...(playlist !== undefined && { playlist }),
+      ...(read.playlists !== undefined && { playlists: read.playlists }),
     };
   },
 
@@ -341,6 +361,10 @@ export const macosControlMusic = tool('macos_control_music', {
     lines.push(`**Repeat:** ${result.repeat ?? '(not running)'}`);
     if (result.playlist !== undefined)
       lines.push(`**Playlist:** ${markdownLiteral(result.playlist)}`);
+    if (result.playlists !== undefined) {
+      lines.push(`## Playlists (${result.playlists.length})`);
+      for (const name of result.playlists) lines.push(`- ${markdownLiteral(name)}`);
+    }
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });
