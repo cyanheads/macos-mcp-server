@@ -504,9 +504,17 @@ describe('Injection safety: macos_take_screenshot (app_name)', () => {
 });
 
 describe('Injection safety: macos_take_screenshot path through the real service', () => {
-  /** Payloads become file names in this /tmp directory. */
-  const DIR = mkdtempSync('/tmp/macos-mcp-injection-');
-  const REAL_DIR = realpathSync(DIR);
+  /**
+   * Payloads become file names in this /tmp directory. Made in beforeAll, never
+   * at collection, so a run that skips this block leaves nothing in /tmp.
+   */
+  let DIR = '';
+  let REAL_DIR = '';
+
+  beforeAll(() => {
+    DIR = mkdtempSync('/tmp/macos-mcp-injection-');
+    REAL_DIR = realpathSync(DIR);
+  });
 
   /** A PNG signature and IHDR chunk, all the service reads of a capture. */
   const PNG = Buffer.alloc(33);

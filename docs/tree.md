@@ -196,7 +196,8 @@ macos-mcp-server/
 │   └── index.ts
 ├── tests/
 │   ├── helpers/
-│   │   └── commonmark.ts
+│   │   ├── commonmark.ts
+│   │   └── expect-linear-time.ts
 │   ├── resources/
 │   │   └── macos-displays.resource.test.ts
 │   ├── scripts/

@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { markdownLiteral } from '@/utils/markdown-literal.js';
 import { commonMarkBlocks } from '../helpers/commonmark.js';
+import { expectLinearTime } from '../helpers/expect-linear-time.js';
 
 /** Strings whose markdown takes effect when interpolated raw into a line of text. */
 const MARKDOWN_ACTIVE = [
@@ -91,4 +92,19 @@ describe('markdownLiteral', () => {
       'label: a�b tail',
     ]);
   });
+});
+
+/** Linear-time bound on upstream-sized text, one shape per test (`expectLinearTime`). */
+describe('markdownLiteral timing', () => {
+  const SHAPES: Array<[string, (size: number) => string]> = [
+    ['one long backtick run', (size) => '`'.repeat(size)],
+    ['backticks and spaces alternating', (size) => '` '.repeat(size / 2)],
+    ['one long line ending in a break', (size) => `${'§1 x'.repeat(size / 4)}\ny`],
+    ['breaks throughout', (size) => '  \r\n'.repeat(size / 4)],
+    ['spaces only', (size) => ' '.repeat(size)],
+  ];
+
+  for (const [shape, build] of SHAPES) {
+    it(`timing: grows linearly for ${shape}`, () => expectLinearTime(markdownLiteral, build), 0);
+  }
 });

@@ -16,6 +16,7 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it } from 'vitest';
 import { appleScriptLiteral } from '@/services/osascript/applescript-literal.js';
 import { OsascriptService } from '@/services/osascript/osascript-service.js';
+import { expectLinearTime } from '../helpers/expect-linear-time.js';
 
 const ch = (...codes: number[]) => String.fromCharCode(...codes);
 
@@ -149,37 +150,8 @@ describe.runIf(process.platform === 'darwin')(
   },
 );
 
-/**
- * Linear-time bound on caller-sized text. Each shape doubles from 5k to 320k
- * characters (64×). Every size is held to an absolute bound in this thread's
- * CPU time before the next one runs, and the whole span to a ratio below 256 —
- * well under the 4096× a quadratic scan would show. A batch of calls per size
- * keeps the small sizes measurable.
- */
+/** Linear-time bound on caller-sized text, one shape per test (`expectLinearTime`). */
 describe('appleScriptLiteral timing', () => {
-  const SIZES = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 320_000];
-  /** Characters encoded per measurement, so a batch at every size does the same work. */
-  const BATCH_CHARS = 640_000;
-  /** CPU microseconds allowed per character of a single call: far above the measured cost. */
-  const MICROS_PER_CHAR = 1;
-
-  const cpuMicros = () => {
-    const { user, system } = process.threadCpuUsage();
-    return user + system;
-  };
-
-  /** The fastest of three batches, in CPU microseconds per call. */
-  function microsPerCall(text: string): number {
-    const calls = Math.max(1, Math.round(BATCH_CHARS / text.length));
-    let best = Number.POSITIVE_INFINITY;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const start = cpuMicros();
-      for (let i = 0; i < calls; i++) appleScriptLiteral(text, 'body');
-      best = Math.min(best, (cpuMicros() - start) / calls);
-    }
-    return best;
-  }
-
   const SHAPES: Array<[string, (size: number) => string]> = [
     ['one long line ending in a break', (size) => `${'§1 x'.repeat(size / 4)}\ny`],
     ['breaks throughout', (size) => '  \r\n'.repeat(size / 4)],
@@ -189,17 +161,10 @@ describe('appleScriptLiteral timing', () => {
   ];
 
   for (const [shape, build] of SHAPES) {
-    it(`timing: grows linearly for ${shape}`, () => {
-      appleScriptLiteral(build(5_000), 'body');
-      let first: number | undefined;
-      let last = Number.NaN;
-      for (const size of SIZES) {
-        const text = build(size);
-        last = microsPerCall(text);
-        expect(last).toBeLessThan(text.length * MICROS_PER_CHAR);
-        first ??= last;
-      }
-      expect(last / (first ?? Number.NaN)).toBeLessThan(256);
-    });
+    it(
+      `timing: grows linearly for ${shape}`,
+      () => expectLinearTime((text) => appleScriptLiteral(text, 'body'), build),
+      0,
+    );
   }
 });

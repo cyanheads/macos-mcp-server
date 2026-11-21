@@ -53,19 +53,28 @@ const MARKDOWN_VALUES = [
   'line\n# heading',
 ];
 
-const TMP = mkdtempSync(join(tmpdir(), 'macos-mcp-finder-test-'));
-const EXISTING_FILE = join(TMP, 'report "q1".txt');
-writeFileSync(EXISTING_FILE, 'x');
+/**
+ * The per-run temp directory and the existing files in it. Made in beforeAll,
+ * never at collection, so a run that skips this file's tests leaves nothing
+ * behind; a table row reads them through a function its test calls.
+ */
+let TMP = '';
+/** An existing file whose name carries double quotes. */
+let EXISTING_FILE = '';
 /** An existing file whose name carries U+0001. */
-const CTL_FILE = join(TMP, `ctl${String.fromCharCode(0x01)}name.txt`);
-writeFileSync(CTL_FILE, 'x');
+let CTL_FILE = '';
+
+beforeAll(() => {
+  TMP = mkdtempSync(join(tmpdir(), 'macos-mcp-finder-test-'));
+  EXISTING_FILE = join(TMP, 'report "q1".txt');
+  writeFileSync(EXISTING_FILE, 'x');
+  CTL_FILE = join(TMP, `ctl${String.fromCharCode(0x01)}name.txt`);
+  writeFileSync(CTL_FILE, 'x');
+  initOsascriptService({} as never, {} as never);
+});
 
 afterAll(() => {
   rmSync(TMP, { recursive: true, force: true });
-});
-
-beforeAll(() => {
-  initOsascriptService({} as never, {} as never);
 });
 
 /** Real osascript stderr strings. */
@@ -300,14 +309,14 @@ describe('macosManageFinder', () => {
   });
 
   it.each([
-    { action: 'frontmost_path' },
-    { action: 'get_selection' },
-    { action: 'trash', path: EXISTING_FILE },
+    { action: 'frontmost_path', args: () => ({ action: 'frontmost_path' }) },
+    { action: 'get_selection', args: () => ({ action: 'get_selection' }) },
+    { action: 'trash', args: () => ({ action: 'trash', path: EXISTING_FILE }) },
   ])(
     '$action keeps an Automation > Finder denial (-1743) as accessibility_required',
-    async (args) => {
+    async ({ args }) => {
       fakeExec(() => ({ stderr: AUTOMATION_DENIED_FINDER }));
-      expect(await failureOf(args)).toEqual({
+      expect(await failureOf(args())).toEqual({
         code: -32005,
         message:
           'Automation permission denied for Finder: execution error: Not authorized to send Apple events to Finder. (-1743)',
@@ -337,25 +346,38 @@ describe('macosManageFinder', () => {
     it.each([
       {
         label: 'reveal',
-        args: { action: 'reveal', path: EXISTING_FILE },
-        argv: ['-R', EXISTING_FILE],
+        arrange: () =>
+          ({
+            args: { action: 'reveal', path: EXISTING_FILE },
+            argv: ['-R', EXISTING_FILE],
+          }) as const,
       },
       {
         label: 'open_with without app_name',
-        args: { action: 'open_with', path: EXISTING_FILE },
-        argv: [EXISTING_FILE],
+        arrange: () =>
+          ({
+            args: { action: 'open_with', path: EXISTING_FILE },
+            argv: [EXISTING_FILE],
+          }) as const,
       },
       {
         label: 'open_with a blank app_name',
-        args: { action: 'open_with', path: EXISTING_FILE, app_name: '' },
-        argv: [EXISTING_FILE],
+        arrange: () =>
+          ({
+            args: { action: 'open_with', path: EXISTING_FILE, app_name: '' },
+            argv: [EXISTING_FILE],
+          }) as const,
       },
       {
         label: 'open_with app_name TextEdit',
-        args: { action: 'open_with', path: EXISTING_FILE, app_name: 'TextEdit' },
-        argv: ['-a', 'TextEdit', EXISTING_FILE],
+        arrange: () =>
+          ({
+            args: { action: 'open_with', path: EXISTING_FILE, app_name: 'TextEdit' },
+            argv: ['-a', 'TextEdit', EXISTING_FILE],
+          }) as const,
       },
-    ] as const)('$label runs open by absolute path with discrete argv', async ({ args, argv }) => {
+    ])('$label runs open by absolute path with discrete argv', async ({ arrange }) => {
+      const { args, argv } = arrange();
       const result = await runToolContract(macosManageFinder, args);
       expect(result.structuredContent).toEqual({
         action: args.action,
@@ -372,7 +394,8 @@ describe('macosManageFinder', () => {
 
     it.each([
       {
-        args: { action: 'reveal', path: '/nonexistent/path' },
+        action: 'reveal',
+        args: () => ({ action: 'reveal', path: '/nonexistent/path' }),
         stderr: 'The file /nonexistent/path does not exist.',
         failure: {
           code: -32001,
@@ -381,7 +404,8 @@ describe('macosManageFinder', () => {
         },
       },
       {
-        args: { action: 'open_with', path: TMP, app_name: 'ZzNonexistentAppQx' },
+        action: 'open_with',
+        args: () => ({ action: 'open_with', path: TMP, app_name: 'ZzNonexistentAppQx' }),
         stderr: "Unable to find application named 'ZzNonexistentAppQx'",
         failure: {
           code: -32001,
@@ -390,7 +414,8 @@ describe('macosManageFinder', () => {
         },
       },
       {
-        args: { action: 'open_with', path: TMP, app_name: 'Zz "Q" \\ x\u0001' },
+        action: 'open_with',
+        args: () => ({ action: 'open_with', path: TMP, app_name: 'Zz "Q" \\ x\u0001' }),
         stderr: 'Unable to find application named \'Zz "Q" \\ x\u0001\'',
         failure: {
           code: -32001,
@@ -399,7 +424,8 @@ describe('macosManageFinder', () => {
         },
       },
       {
-        args: { action: 'reveal', path: EXISTING_FILE },
+        action: 'reveal',
+        args: () => ({ action: 'reveal', path: EXISTING_FILE }),
         stderr: 'LSOpenURLsWithRole() failed with error -600.',
         failure: {
           code: -32603,
@@ -408,10 +434,10 @@ describe('macosManageFinder', () => {
         },
       },
     ])(
-      '$args.action failing with "$stderr" reports what open printed, never the command line',
+      '$action failing with "$stderr" reports what open printed, never the command line',
       async ({ args, stderr, failure }) => {
         fakeExec(() => ({ stderr }));
-        expect(await failureOf(args)).toEqual(failure);
+        expect(await failureOf(args())).toEqual(failure);
       },
     );
   });
@@ -420,14 +446,17 @@ describe('macosManageFinder', () => {
     it.each([
       {
         label: 'with quotes escaped',
-        path: EXISTING_FILE,
-        literal: `"${TMP}/report \\"q1\\".txt"`,
+        arrange: () => ({ path: EXISTING_FILE, literal: `"${TMP}/report \\"q1\\".txt"` }),
       },
       // JSON's backslash-u form does not compile in AppleScript.
-      { label: 'with U+0001 raw', path: CTL_FILE, literal: `"${TMP}/ctl\u0001name.txt"` },
+      {
+        label: 'with U+0001 raw',
+        arrange: () => ({ path: CTL_FILE, literal: `"${TMP}/ctl\u0001name.txt"` }),
+      },
     ])(
       'moves an existing path to the Trash through Finder, the path a literal $label',
-      async ({ path, literal }) => {
+      async ({ arrange }) => {
+        const { path, literal } = arrange();
         const result = await runToolContract(macosManageFinder, { action: 'trash', path });
         expect(result.structuredContent).toEqual({ action: 'trash', success: true, path });
         expect(spawns()).toEqual([
@@ -520,20 +549,25 @@ describe('macosManageFinder', () => {
     it.each([
       {
         label: 'U+0000',
-        path: `/zz/a${String.fromCharCode(0x00)}b`,
-        message:
-          'path contains U+0000 at UTF-16 offset 5, which osascript cannot pass to AppleScript.',
+        arrange: () => ({
+          path: `/zz/a${String.fromCharCode(0x00)}b`,
+          message:
+            'path contains U+0000 at UTF-16 offset 5, which osascript cannot pass to AppleScript.',
+        }),
         hint: 'Remove U+0000 from path and call again.',
       },
       {
         label: 'an unpaired surrogate',
-        path: `${TMP}/${String.fromCharCode(0xd800)}`,
-        message: `path contains an unpaired surrogate U+D800 at UTF-16 offset ${TMP.length + 1}, which AppleScript text cannot represent.`,
+        arrange: () => ({
+          path: `${TMP}/${String.fromCharCode(0xd800)}`,
+          message: `path contains an unpaired surrogate U+D800 at UTF-16 offset ${TMP.length + 1}, which AppleScript text cannot represent.`,
+        }),
         hint: 'Remove the unpaired surrogate from path, or send the whole character it belongs to.',
       },
     ])(
       'a path containing $label fails as invalid input naming path, running nothing',
-      async ({ path, message, hint }) => {
+      async ({ arrange, hint }) => {
+        const { path, message } = arrange();
         const result = await runToolContract(macosManageFinder, { action: 'trash', path });
         expect(contractError(result)).toEqual({
           code: -32602,
@@ -556,34 +590,37 @@ describe('macosManageFinder cancellation', () => {
     fakeExec(() => ({ stdout: '' }));
   });
 
-  for (const args of [
-    { action: 'reveal', path: EXISTING_FILE },
-    { action: 'open_with', path: EXISTING_FILE, app_name: 'TextEdit' },
-  ] as const) {
-    it(`${args.action} on a request already cancelled settles as RequestCancelled and runs no open`, async () => {
+  for (const { action, args } of [
+    { action: 'reveal', args: () => ({ action: 'reveal', path: EXISTING_FILE }) as const },
+    {
+      action: 'open_with',
+      args: () => ({ action: 'open_with', path: EXISTING_FILE, app_name: 'TextEdit' }) as const,
+    },
+  ]) {
+    it(`${action} on a request already cancelled settles as RequestCancelled and runs no open`, async () => {
       const controller = new AbortController();
       controller.abort();
-      const result = await runToolContract(macosManageFinder, args, {
+      const result = await runToolContract(macosManageFinder, args(), {
         context: { signal: controller.signal },
       });
       expect(contractError(result)).toMatchObject({ code: -32011 });
       expect(execFileMock).not.toHaveBeenCalled();
     });
 
-    it(`${args.action} cancelled while open runs rethrows the AbortError, not path_not_found or an open failure`, async () => {
+    it(`${action} cancelled while open runs rethrows the AbortError, not path_not_found or an open failure`, async () => {
       const controller = new AbortController();
       const rejections = fakeExec(() => {
         controller.abort();
         return 'killed';
       });
-      const err = await settle(args, controller.signal);
+      const err = await settle(args(), controller.signal);
       expect(rejections).toHaveLength(1);
       expect(err).toBe(rejections[0]);
     });
 
-    it(`${args.action} passes the caller’s signal to open beside its own timeout`, async () => {
+    it(`${action} passes the caller’s signal to open beside its own timeout`, async () => {
       const ctx = createMockContext({ errors: macosManageFinder.errors });
-      await macosManageFinder.handler(macosManageFinder.input.parse(args), ctx);
+      await macosManageFinder.handler(macosManageFinder.input.parse(args()), ctx);
       const opts = execFileMock.mock.calls.map((c) => c[2] as { signal?: AbortSignal });
       expect(opts).toEqual([{ timeout: 10_000, signal: expect.any(AbortSignal) }]);
       expect(opts[0]?.signal).toBe(ctx.signal);

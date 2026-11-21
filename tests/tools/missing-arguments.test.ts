@@ -92,14 +92,19 @@ function expectInvalidArguments(result: ToolResult): ErrorEnvelope {
   return error;
 }
 
-/** An existing directory for screenshot paths, so a capture gets as far as screencapture. */
-const SHOT_DIR = mkdtempSync('/tmp/macos-mcp-missing-args-');
+/**
+ * An existing directory for screenshot paths, so a capture gets as far as
+ * screencapture. Made in beforeAll, never at collection, so a run that skips
+ * this file's tests leaves nothing in /tmp.
+ */
+let SHOT_DIR = '';
 
 /** The failure a capture to `name` in SHOT_DIR reports when screencapture writes nothing. */
 const noFileWritten = (name: string) =>
   `Could not read the size of the screenshot for "${join(realpathSync(SHOT_DIR), name)}": screencapture wrote no file.`;
 
 beforeAll(() => {
+  SHOT_DIR = mkdtempSync('/tmp/macos-mcp-missing-args-');
   initOsascriptService({} as never, {} as never);
   initAudioService({} as never, {} as never);
   initDisplayService({} as never, {} as never);
