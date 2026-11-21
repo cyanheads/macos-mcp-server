@@ -5,7 +5,7 @@
  * carries a stdin that records what the tool writes, and its exit callback runs
  * on a later turn, as a real child's does; a child whose signal has fired by
  * then rejects with an AbortError, as Node's execFile does. `readFile` finds no
- * Focus state file unless a test queues one.
+ * Focus database file unless a test names one with `focusFiles`.
  * @module tests/tools/macos-manage-focus.tool.test
  */
 
@@ -36,12 +36,9 @@ vi.mock('node:child_process', () => ({
   execFile: execFileMock,
 }));
 
-/** No Focus state file unless a test queues its own answer, so no test reads this Mac's. */
+/** Focus database reads are answered by `focusFiles`, so no test reads this Mac's. */
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  readFileMock.mockRejectedValue(
-    Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }),
-  );
   return { ...actual, readFile: readFileMock };
 });
 
@@ -158,13 +155,156 @@ const ASSERTIONS_NO_RECORDS = JSON.stringify({
   header: { version: 8, timestamp: 804522188.86670899 },
 });
 
+/** Do Not Disturb's mode identifier. */
+const DND = 'com.apple.donotdisturb.mode.default';
+
+/** An Assertions.json whose first record asserts `mode`. */
+const assertionFor = (mode: unknown) =>
+  JSON.stringify({
+    data: [
+      { storeAssertionRecords: [{ assertionDetails: { assertionDetailsModeIdentifier: mode } }] },
+    ],
+  });
+
+/**
+ * `~/Library/DoNotDisturb/DB/ModeConfigurations.json` in the shape third-party
+ * readers of it document: `data[0].modeConfigurations`, keyed by mode
+ * identifier, each entry naming its Focus in `mode.name`. Built from those
+ * references, not read from a Mac: the file needs Full Disk Access.
+ */
+const MODE_CONFIGURATIONS = JSON.stringify({
+  data: [
+    {
+      modeConfigurations: {
+        'com.apple.donotdisturb.mode.default': {
+          triggers: { triggers: [] },
+          automaticallyGenerated: false,
+          mode: {
+            name: 'Do Not Disturb',
+            identifier: 'F1C0A6D2-5B6E-4C1A-9C3E-1E8B2F0D7A11',
+            semanticType: 0,
+            symbolImageName: 'moon.fill',
+            modeIdentifier: 'com.apple.donotdisturb.mode.default',
+            visibility: 0,
+          },
+          configuration: { suppressionType: 2, compatibilityVersion: 3 },
+          created: 1671056911.476048,
+          lastModified: 1674036685.879897,
+        },
+        'com.apple.focus.work': {
+          triggers: {
+            triggers: [
+              {
+                class: 'DNDModeConfigurationScheduleTrigger',
+                enabledSetting: 2,
+                timePeriodStartTimeHour: 9,
+                timePeriodStartTimeMinute: 0,
+                timePeriodEndTimeHour: 17,
+                timePeriodEndTimeMinute: 0,
+                timePeriodWeekdays: 31,
+              },
+            ],
+          },
+          automaticallyGenerated: false,
+          mode: {
+            name: 'Work',
+            tintColorName: 'systemTealColor',
+            identifier: '0B6C2E7A-3D41-4F2B-8E5D-6A9C1F3B2E44',
+            semanticType: 4,
+            symbolImageName: 'person.lanyardcard.fill',
+            modeIdentifier: 'com.apple.focus.work',
+            visibility: 0,
+          },
+          hasSecureData: true,
+        },
+        'com.apple.focus.personal-time': {
+          triggers: { triggers: [] },
+          mode: {
+            name: 'Personal',
+            identifier: '7E3A9B15-C2D8-4E6F-A1B0-58D4C9E2F377',
+            modeIdentifier: 'com.apple.focus.personal-time',
+          },
+        },
+      },
+    },
+  ],
+  header: { version: 8, timestamp: 804522188.86670899 },
+});
+
+/** The three modes MODE_CONFIGURATIONS configures, in file order. */
+const CONFIGURED_MODES = [
+  { name: 'Do Not Disturb', identifier: 'com.apple.donotdisturb.mode.default' },
+  { name: 'Work', identifier: 'com.apple.focus.work' },
+  { name: 'Personal', identifier: 'com.apple.focus.personal-time' },
+];
+
+/** A ModeConfigurations.json configuring `name` under `identifier`, and nothing else. */
+const modeConfigurationsFor = (identifier: string, name: unknown) =>
+  JSON.stringify({ data: [{ modeConfigurations: { [identifier]: { mode: { name } } } }] });
+
 const UNKNOWN_REASON =
   'The Focus state file (~/Library/DoNotDisturb/DB/Assertions.json) could not be read or parsed, so the current Focus status is unknown.';
+
+const FULL_DISK_ACCESS_REASON =
+  'macOS refused to read the Focus state file (~/Library/DoNotDisturb/DB/Assertions.json) because the server process lacks Full Disk Access, so the current Focus status is unknown. Grant Full Disk Access in System Settings > Privacy & Security > Full Disk Access for your terminal or MCP host app, then quit and reopen it.';
+
+const INACTIVE_NOTICE =
+  'The Focus state file (~/Library/DoNotDisturb/DB/Assertions.json) holds no Focus assertion. A Focus turned on by hand records one; a Focus started by its schedule or another trigger can be on without one, and triggers are not evaluated.';
+
+const FULL_DISK_ACCESS_RECOVERY =
+  'Grant Full Disk Access in System Settings > Privacy & Security > Full Disk Access for your terminal or MCP host app, then quit and reopen it.';
+
+const ASSERTIONS_PATH = `${process.env.HOME}/Library/DoNotDisturb/DB/Assertions.json`;
+const MODES_PATH = `${process.env.HOME}/Library/DoNotDisturb/DB/ModeConfigurations.json`;
+
+/** A read rejected as Node's fs rejects it, `code` and its message included. */
+const errno = (code: string, path: string) =>
+  Object.assign(new Error(`${code}: read failed, open '${path}'`), {
+    code,
+    errno: -1,
+    syscall: 'open',
+    path,
+  });
+
+/** What a read of one Focus database file does: resolve with this text, or reject with this error. */
+type FileOutcome = string | Error;
+
+/**
+ * Answers each Focus database read by its path. A file a test does not name is
+ * missing (ENOENT), as is any other path. A read whose signal has fired rejects
+ * with an AbortError, as Node's readFile does.
+ */
+function focusFiles(files: { assertions?: FileOutcome; modes?: FileOutcome }): void {
+  readFileMock.mockImplementation(async (path: string, opts?: { signal?: AbortSignal }) => {
+    if (opts?.signal?.aborted) throw abortError();
+    const outcome =
+      path === ASSERTIONS_PATH ? files.assertions : path === MODES_PATH ? files.modes : undefined;
+    if (outcome === undefined) throw errno('ENOENT', path);
+    if (typeof outcome !== 'string') throw outcome;
+    return outcome;
+  });
+}
+
+/** The Focus database files read, by name, in order. */
+const filesRead = () =>
+  readFileMock.mock.calls.map((c) => String(c[0]).slice(String(c[0]).lastIndexOf('/') + 1));
 
 type ContractResult = Awaited<ReturnType<typeof runToolContract>>;
 
 function contentText(result: ContractResult): string {
   return (result.content ?? []).map((b) => ('text' in b ? b.text : '')).join('\n');
+}
+
+/** The error envelope on `structuredContent`. */
+function errorOf(result: ContractResult) {
+  type Envelope = {
+    error?: {
+      code?: number;
+      message?: string;
+      data?: { reason?: string; recovery?: { hint?: string } };
+    };
+  };
+  return (result.structuredContent as Envelope | undefined)?.error ?? {};
 }
 
 /** What the handler throws for `args`, called directly with the tool's error contract. */
@@ -179,191 +319,471 @@ async function handlerError(args: Record<string, unknown>, signal?: AbortSignal)
 
 beforeEach(() => {
   execFileMock.mockReset();
+  readFileMock.mockReset();
+  focusFiles({});
   stdin = new FakeStdin();
   stdinEndedAtExit = undefined;
   answerAbsolute();
 });
 
 describe('macosManageFocus get', () => {
-  it('get reads the Focus defaults domain through /usr/bin/defaults', async () => {
-    answerAbsolute((cmd) => (cmd === SYSTEM_BINARIES.defaults ? '{ FocusMode = 1; }' : ''));
-    const result = await macosManageFocus.handler(
-      macosManageFocus.input.parse({ action: 'get' }),
-      createMockContext({ errors: macosManageFocus.errors }),
-    );
-    expect(result).toEqual({ action: 'get', status: 'active', mode: null });
-    expect(execFileMock.mock.calls.map((c) => c.slice(0, 2))).toEqual([
-      [SYSTEM_BINARIES.defaults, ['read', '/Library/Preferences/com.apple.CommCenter.counts']],
+  it('get and list run no subprocess: no action reads the defaults database', async () => {
+    focusFiles({ assertions: assertionFor(DND), modes: MODE_CONFIGURATIONS });
+    expect((await runToolContract(macosManageFocus, { action: 'get' })).isError).toBeFalsy();
+    expect((await runToolContract(macosManageFocus, { action: 'list' })).isError).toBeFalsy();
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('get reads a Focus state file holding no assertion record as inactive, with the notice on both surfaces, and reads no Focus names', async () => {
+    focusFiles({ assertions: ASSERTIONS_NO_RECORDS, modes: MODE_CONFIGURATIONS });
+    const result = await runToolContract(macosManageFocus, { action: 'get' });
+    expect(result.structuredContent).toEqual({
+      action: 'get',
+      status: 'inactive',
+      mode: null,
+      mode_name: null,
+      notice: INACTIVE_NOTICE,
+    });
+    expect(contentText(result)).toContain(`\n> ${INACTIVE_NOTICE}`);
+    expect(commonMarkBlocks(contentText(result))).toEqual([
+      'action: get\nstatus: inactive\nmode: (none)\nmode_name: (none)',
+      INACTIVE_NOTICE,
     ]);
+    expect(filesRead()).toEqual(['Assertions.json']);
   });
 
-  it('get reads a Focus state file holding no assertion record as inactive', async () => {
-    readFileMock.mockResolvedValueOnce(ASSERTIONS_NO_RECORDS);
-    const result = await macosManageFocus.handler(
-      macosManageFocus.input.parse({ action: 'get' }),
-      createMockContext({ errors: macosManageFocus.errors }),
-    );
-    expect(result).toEqual({ action: 'get', status: 'inactive', mode: null });
-  });
+  it.each([
+    [DND, 'Do Not Disturb'],
+    ['com.apple.focus.work', 'Work'],
+    ['com.apple.focus.personal-time', 'Personal'],
+  ])(
+    'get reports the asserted mode %s with its Focus name %j as active on both surfaces, with no notice',
+    async (mode, name) => {
+      focusFiles({ assertions: assertionFor(mode), modes: MODE_CONFIGURATIONS });
+      const result = await runToolContract(macosManageFocus, { action: 'get' });
+      expect(result.structuredContent).toEqual({
+        action: 'get',
+        status: 'active',
+        mode,
+        mode_name: name,
+      });
+      expect(contentText(result)).toBe(
+        `**action:** get\n**status:** active\n**mode:** \`${mode}\`\n**mode_name:** \`${name}\``,
+      );
+      expect(filesRead()).toEqual(['Assertions.json', 'ModeConfigurations.json']);
+    },
+  );
 
-  it('get reports the first assertion record’s mode identifier as active on both surfaces', async () => {
-    readFileMock.mockResolvedValueOnce(
-      JSON.stringify({
+  it('get with several assertion records reports the first record’s mode', async () => {
+    const record = (mode: string, assertionStartDateTimestamp: number) => ({
+      assertionStartDateTimestamp,
+      assertionDetails: { assertionDetailsModeIdentifier: mode },
+    });
+    focusFiles({
+      assertions: JSON.stringify({
         data: [
           {
             storeAssertionRecords: [
-              {
-                assertionDetails: {
-                  assertionDetailsModeIdentifier: 'com.apple.donotdisturb.mode.default',
-                },
-              },
+              record('com.apple.focus.work', 804000000),
+              record('com.apple.focus.personal-time', 804500000),
             ],
           },
         ],
       }),
-    );
+      modes: MODE_CONFIGURATIONS,
+    });
     const result = await runToolContract(macosManageFocus, { action: 'get' });
     expect(result.structuredContent).toEqual({
       action: 'get',
       status: 'active',
-      mode: 'com.apple.donotdisturb.mode.default',
+      mode: 'com.apple.focus.work',
+      mode_name: 'Work',
     });
-    expect(contentText(result)).toBe(
-      '**action:** get\n**status:** active\n**mode:** `com.apple.donotdisturb.mode.default`',
-    );
   });
 
   it.each(MARKDOWN_VALUES)(
-    'get with a state file mode identifier holding %j reads it back from content[] exactly',
-    async (mode) => {
-      readFileMock.mockResolvedValueOnce(
-        JSON.stringify({
-          data: [
-            {
-              storeAssertionRecords: [
-                { assertionDetails: { assertionDetailsModeIdentifier: mode } },
-              ],
-            },
-          ],
-        }),
-      );
+    'get with a mode identifier and Focus name holding %j reads both back from content[] exactly',
+    async (value) => {
+      focusFiles({ assertions: assertionFor(value), modes: modeConfigurationsFor(value, value) });
       const result = await runToolContract(macosManageFocus, { action: 'get' });
-      expect(result.structuredContent).toEqual({ action: 'get', status: 'active', mode });
+      expect(result.structuredContent).toEqual({
+        action: 'get',
+        status: 'active',
+        mode: value,
+        mode_name: value,
+      });
       expect(commonMarkBlocks(contentText(result))).toEqual([
-        `action: get\nstatus: active\nmode: ${mode}`,
+        `action: get\nstatus: active\nmode: ${value}\nmode_name: ${value}`,
       ]);
     },
   );
 
   it.each([
-    ['holding no data list', '{}', 'inactive', null],
-    ['with an empty data list', '{"data": []}', 'inactive', null],
+    ['names no Focus for the asserted mode', modeConfigurationsFor('com.apple.focus.work', 'Work')],
+    ['cannot be read (EPERM)', errno('EPERM', MODES_PATH)],
+    ['cannot be read (ENOENT)', errno('ENOENT', MODES_PATH)],
+    ['is not JSON', '{not json'],
+    ['is a JSON list', '[]'],
+    ['holds no data list', '{}'],
+    ['holds an empty data list', '{"data": []}'],
+    ['holds no modeConfigurations', '{"data":[{}]}'],
+    ['holds text for modeConfigurations', '{"data":[{"modeConfigurations":"modes"}]}'],
+    ['holds a list for modeConfigurations', `{"data":[{"modeConfigurations":["${DND}"]}]}`],
+    ['configures the mode with no mode object', `{"data":[{"modeConfigurations":{"${DND}":{}}}]}`],
     [
-      'whose first record has no assertionDetails',
-      '{"data":[{"storeAssertionRecords":[{}]}]}',
-      'active',
-      null,
+      'configures the mode with no name',
+      `{"data":[{"modeConfigurations":{"${DND}":{"mode":{}}}}]}`,
     ],
-    [
-      'whose first record names no mode',
-      '{"data":[{"storeAssertionRecords":[{"assertionDetails":{}}]}]}',
-      'active',
-      null,
-    ],
-  ] as const)('get reads a Focus state file %s as %s', async (_label, file, status, mode) => {
-    readFileMock.mockResolvedValueOnce(file);
+    ['configures the mode with a numeric name', modeConfigurationsFor(DND, 5)],
+  ])(
+    'get with a ModeConfigurations.json that %s keeps status active and the mode, with mode_name null and no notice',
+    async (_label, modes) => {
+      focusFiles({ assertions: assertionFor(DND), modes });
+      const result = await runToolContract(macosManageFocus, { action: 'get' });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        action: 'get',
+        status: 'active',
+        mode: DND,
+        mode_name: null,
+      });
+      expect(contentText(result)).toBe(
+        `**action:** get\n**status:** active\n**mode:** \`${DND}\`\n**mode_name:** (none)`,
+      );
+    },
+  );
+
+  it.each([
+    ['holding no data list', '{}'],
+    ['with an empty data list', '{"data": []}'],
+  ])('get reads a Focus state file %s as inactive, with the notice', async (_label, file) => {
+    focusFiles({ assertions: file, modes: MODE_CONFIGURATIONS });
     const result = await runToolContract(macosManageFocus, { action: 'get' });
-    expect(result.structuredContent).toEqual({ action: 'get', status, mode });
+    expect(result.structuredContent).toEqual({
+      action: 'get',
+      status: 'inactive',
+      mode: null,
+      mode_name: null,
+      notice: INACTIVE_NOTICE,
+    });
   });
 
   it.each([
+    ['whose first record has no assertionDetails', '{"data":[{"storeAssertionRecords":[{}]}]}'],
     [
-      'unreadable',
-      () =>
-        readFileMock.mockRejectedValueOnce(
-          Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }),
-        ),
-    ],
-    ['unparseable', () => readFileMock.mockResolvedValueOnce('{not json')],
-    ['out-of-shape (JSON list)', () => readFileMock.mockResolvedValueOnce('[]')],
-    ['out-of-shape (text data)', () => readFileMock.mockResolvedValueOnce('{"data": "records"}')],
-    [
-      'out-of-shape (text records)',
-      () => readFileMock.mockResolvedValueOnce('{"data":[{"storeAssertionRecords":"records"}]}'),
-    ],
-    [
-      'out-of-shape (numeric mode identifier)',
-      () =>
-        readFileMock.mockResolvedValueOnce(
-          '{"data":[{"storeAssertionRecords":[{"assertionDetails":{"assertionDetailsModeIdentifier":5}}]}]}',
-        ),
+      'whose first record names no mode',
+      '{"data":[{"storeAssertionRecords":[{"assertionDetails":{}}]}]}',
     ],
   ])(
-    'get with an %s Focus state file returns unknown with a reason on both surfaces',
-    async (_label, queueRead) => {
-      queueRead();
+    'get reads a Focus state file %s as active with no mode, reading no Focus names',
+    async (_label, file) => {
+      focusFiles({ assertions: file, modes: MODE_CONFIGURATIONS });
+      const result = await runToolContract(macosManageFocus, { action: 'get' });
+      expect(result.structuredContent).toEqual({
+        action: 'get',
+        status: 'active',
+        mode: null,
+        mode_name: null,
+      });
+      expect(filesRead()).toEqual(['Assertions.json']);
+    },
+  );
+
+  it('get whose Focus state file read is refused with EPERM returns unknown with a reason naming Full Disk Access on both surfaces, reading no Focus names', async () => {
+    focusFiles({ assertions: errno('EPERM', ASSERTIONS_PATH), modes: MODE_CONFIGURATIONS });
+    const result = await runToolContract(macosManageFocus, { action: 'get' });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      action: 'get',
+      status: 'unknown',
+      mode: null,
+      mode_name: null,
+      reason: FULL_DISK_ACCESS_REASON,
+    });
+    expect(contentText(result)).toBe(
+      `**action:** get\n**status:** unknown\n**mode:** (none)\n**mode_name:** (none)\n**reason:** ${FULL_DISK_ACCESS_REASON}`,
+    );
+    expect(JSON.stringify(result)).not.toContain(String(process.env.HOME));
+    expect(filesRead()).toEqual(['Assertions.json']);
+  });
+
+  it.each([
+    ['unreadable (EACCES)', errno('EACCES', ASSERTIONS_PATH)],
+    ['missing (ENOENT)', errno('ENOENT', ASSERTIONS_PATH)],
+    ['unparseable', '{not json'],
+    ['out-of-shape (JSON list)', '[]'],
+    ['out-of-shape (text data)', '{"data": "records"}'],
+    ['out-of-shape (text records)', '{"data":[{"storeAssertionRecords":"records"}]}'],
+    [
+      'out-of-shape (numeric mode identifier)',
+      '{"data":[{"storeAssertionRecords":[{"assertionDetails":{"assertionDetailsModeIdentifier":5}}]}]}',
+    ],
+  ])(
+    'get with an %s Focus state file returns unknown with the unreadable reason on both surfaces, and no notice',
+    async (_label, assertions) => {
+      focusFiles({ assertions, modes: MODE_CONFIGURATIONS });
       const result = await runToolContract(macosManageFocus, { action: 'get' });
       expect(result.structuredContent).toEqual({
         action: 'get',
         status: 'unknown',
         mode: null,
+        mode_name: null,
         reason: UNKNOWN_REASON,
       });
       expect(contentText(result)).toBe(
-        `**action:** get\n**status:** unknown\n**mode:** (none)\n**reason:** ${UNKNOWN_REASON}`,
+        `**action:** get\n**status:** unknown\n**mode:** (none)\n**mode_name:** (none)\n**reason:** ${UNKNOWN_REASON}`,
       );
     },
   );
 });
 
-describe('macosManageFocus get cancellation', () => {
-  it('get passes the caller’s signal to defaults beside its timeout and to the state file read', async () => {
-    readFileMock.mockResolvedValueOnce(ASSERTIONS_NO_RECORDS);
+describe('macosManageFocus list', () => {
+  it('list returns every configured Focus name and identifier in file order on both surfaces, reading only ModeConfigurations.json', async () => {
+    focusFiles({ assertions: assertionFor(DND), modes: MODE_CONFIGURATIONS });
+    const result = await runToolContract(macosManageFocus, { action: 'list' });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({ action: 'list', modes: CONFIGURED_MODES });
+    expect(contentText(result)).toBe(
+      [
+        '**action:** list',
+        '## Focus Modes (3)',
+        '- name: `Do Not Disturb` identifier: `com.apple.donotdisturb.mode.default`',
+        '- name: `Work` identifier: `com.apple.focus.work`',
+        '- name: `Personal` identifier: `com.apple.focus.personal-time`',
+      ].join('\n'),
+    );
+    expect(filesRead()).toEqual(['ModeConfigurations.json']);
+  });
+
+  it('get and list read the first store of a ModeConfigurations.json that holds a second one', async () => {
+    const modes = JSON.stringify({
+      data: [
+        { modeConfigurations: { [DND]: { mode: { name: 'Do Not Disturb' } } } },
+        { modeConfigurations: {} },
+      ],
+    });
+    focusFiles({ assertions: assertionFor(DND), modes });
+    const get = await runToolContract(macosManageFocus, { action: 'get' });
+    expect(get.structuredContent).toEqual({
+      action: 'get',
+      status: 'active',
+      mode: DND,
+      mode_name: 'Do Not Disturb',
+    });
+    const list = await runToolContract(macosManageFocus, { action: 'list' });
+    expect(list.structuredContent).toEqual({
+      action: 'list',
+      modes: [{ name: 'Do Not Disturb', identifier: DND }],
+    });
+  });
+
+  it('list with no Focus configured returns modes [] on both surfaces', async () => {
+    focusFiles({ modes: '{"data":[{"modeConfigurations":{}}]}' });
+    const result = await runToolContract(macosManageFocus, { action: 'list' });
+    expect(result.structuredContent).toEqual({ action: 'list', modes: [] });
+    expect(contentText(result)).toBe('**action:** list\n## Focus Modes (0)');
+  });
+
+  it.each([
+    ['no mode object', {}],
+    ['no name', { mode: {} }],
+    ['a numeric name', { mode: { name: 5 } }],
+    ['text in place of the entry', 'Work'],
+  ])(
+    'list keeps an entry with %s as name null on both surfaces, beside the named ones',
+    async (_label, entry) => {
+      focusFiles({
+        modes: JSON.stringify({
+          data: [
+            {
+              modeConfigurations: {
+                [DND]: { mode: { name: 'Do Not Disturb' } },
+                'com.apple.focus.work': entry,
+              },
+            },
+          ],
+        }),
+      });
+      const result = await runToolContract(macosManageFocus, { action: 'list' });
+      expect(result.structuredContent).toEqual({
+        action: 'list',
+        modes: [
+          { name: 'Do Not Disturb', identifier: DND },
+          { name: null, identifier: 'com.apple.focus.work' },
+        ],
+      });
+      expect(contentText(result).split('\n').at(-1)).toBe(
+        '- name: (none) identifier: `com.apple.focus.work`',
+      );
+    },
+  );
+
+  it.each(MARKDOWN_VALUES)(
+    'list with a Focus name and identifier holding %j reads both back from content[] exactly',
+    async (value) => {
+      focusFiles({ modes: modeConfigurationsFor(`id ${value}`, value) });
+      const result = await runToolContract(macosManageFocus, { action: 'list' });
+      expect(result.structuredContent).toEqual({
+        action: 'list',
+        modes: [{ name: value, identifier: `id ${value}` }],
+      });
+      expect(commonMarkBlocks(contentText(result))).toEqual([
+        'action: list',
+        'Focus Modes (1)',
+        `name: ${value} identifier: id ${value}`,
+      ]);
+    },
+  );
+
+  it('list refused with EPERM fails full_disk_access_required (Forbidden) with its declared recovery on both surfaces', async () => {
+    focusFiles({ modes: errno('EPERM', MODES_PATH) });
+    const result = await runToolContract(macosManageFocus, { action: 'list' });
+    expect(result.isError).toBe(true);
+    expect(errorOf(result)).toMatchObject({
+      code: JsonRpcErrorCode.Forbidden,
+      message:
+        'macOS refused to read the Focus configuration file (~/Library/DoNotDisturb/DB/ModeConfigurations.json) because the server process lacks Full Disk Access.',
+      data: {
+        reason: 'full_disk_access_required',
+        recovery: { hint: FULL_DISK_ACCESS_RECOVERY },
+      },
+    });
+    expect(contentText(result).split('\n')).toContain(`Recovery: ${FULL_DISK_ACCESS_RECOVERY}`);
+    expect(result.structuredContent).not.toHaveProperty('modes');
+    expect(JSON.stringify(result)).not.toContain(String(process.env.HOME));
+  });
+
+  it.each([
+    ['ENOENT', errno('ENOENT', MODES_PATH), ' (ENOENT)'],
+    ['EACCES', errno('EACCES', MODES_PATH), ' (EACCES)'],
+    ['EISDIR', errno('EISDIR', MODES_PATH), ' (EISDIR)'],
+    ['with no code', new Error('read failed'), ''],
+  ])(
+    'list whose read fails %s is a ServiceUnavailable error naming the file, never full_disk_access_required or modes []',
+    async (_label, failure, code) => {
+      focusFiles({ modes: failure });
+      const result = await runToolContract(macosManageFocus, { action: 'list' });
+      expect(result.isError).toBe(true);
+      const error = errorOf(result);
+      expect(error).toMatchObject({
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        message: `The Focus configuration file (~/Library/DoNotDisturb/DB/ModeConfigurations.json) could not be read${code}.`,
+      });
+      expect(error.data?.reason).toBeUndefined();
+      expect(result.structuredContent).not.toHaveProperty('modes');
+      expect(JSON.stringify(result)).not.toContain(String(process.env.HOME));
+    },
+  );
+
+  it.each([
+    ['is not JSON', '{not json'],
+    ['is a JSON list', '[]'],
+    ['holds no data list', '{}'],
+    ['holds an empty data list', '{"data": []}'],
+    ['holds text for its first data entry', '{"data":["modes"]}'],
+    ['holds no modeConfigurations', '{"data":[{}]}'],
+    ['holds text for modeConfigurations', '{"data":[{"modeConfigurations":"modes"}]}'],
+    ['holds a list for modeConfigurations', `{"data":[{"modeConfigurations":["${DND}"]}]}`],
+  ])(
+    'list whose ModeConfigurations.json %s is a SerializationError, never modes []',
+    async (_label, modes) => {
+      focusFiles({ modes });
+      const result = await runToolContract(macosManageFocus, { action: 'list' });
+      expect(result.isError).toBe(true);
+      expect(errorOf(result)).toMatchObject({
+        code: JsonRpcErrorCode.SerializationError,
+        message:
+          'The Focus configuration file (~/Library/DoNotDisturb/DB/ModeConfigurations.json) does not hold data[0].modeConfigurations, the shape this server reads, so the configured Focus modes could not be listed.',
+      });
+      expect(result.structuredContent).not.toHaveProperty('modes');
+    },
+  );
+});
+
+describe('macosManageFocus get and list cancellation', () => {
+  /**
+   * Answers reads as `focusFiles(files)` does, and cancels `controller` as the
+   * read of `path` starts, so that read rejects with an AbortError.
+   */
+  function cancelDuringRead(
+    controller: AbortController,
+    path: string,
+    files: Parameters<typeof focusFiles>[0],
+  ): void {
+    focusFiles(files);
+    const read = readFileMock.getMockImplementation();
+    readFileMock.mockImplementation(async (p: string, opts?: { signal?: AbortSignal }) => {
+      if (p === path) controller.abort();
+      return read?.(p, opts);
+    });
+  }
+
+  it('get passes the caller’s signal to both Focus database reads', async () => {
+    focusFiles({ assertions: assertionFor(DND), modes: MODE_CONFIGURATIONS });
     const ctx = createMockContext({ errors: macosManageFocus.errors });
     await macosManageFocus.handler(macosManageFocus.input.parse({ action: 'get' }), ctx);
-    expect(execFileMock.mock.calls.map((c) => c[2])).toEqual([
-      { timeout: 3_000, signal: ctx.signal },
+    expect(readFileMock.mock.calls).toEqual([
+      [ASSERTIONS_PATH, { encoding: 'utf-8', signal: ctx.signal }],
+      [MODES_PATH, { encoding: 'utf-8', signal: ctx.signal }],
     ]);
-    expect(readFileMock).toHaveBeenLastCalledWith(
-      `${process.env.HOME}/Library/DoNotDisturb/DB/Assertions.json`,
-      { encoding: 'utf-8', signal: ctx.signal },
-    );
   });
 
-  it('get on a request already cancelled settles as RequestCancelled, never as a status', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const result = await runToolContract(
-      macosManageFocus,
-      { action: 'get' },
-      { context: { signal: controller.signal } },
-    );
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent).toMatchObject({
-      error: { code: JsonRpcErrorCode.RequestCancelled },
-    });
-    expect(result.structuredContent).not.toHaveProperty('status');
+  it('list passes the caller’s signal to its read', async () => {
+    focusFiles({ modes: MODE_CONFIGURATIONS });
+    const ctx = createMockContext({ errors: macosManageFocus.errors });
+    await macosManageFocus.handler(macosManageFocus.input.parse({ action: 'list' }), ctx);
+    expect(readFileMock.mock.calls).toEqual([
+      [MODES_PATH, { encoding: 'utf-8', signal: ctx.signal }],
+    ]);
   });
 
-  it('get cancelled while defaults runs rethrows the AbortError and reads no state file', async () => {
-    const controller = new AbortController();
-    answerAbsolute(undefined, controller);
-    readFileMock.mockClear();
-    const err = await handlerError({ action: 'get' }, controller.signal);
-    expect(err).toMatchObject({ name: 'AbortError', code: 'ABORT_ERR' });
-    expect(readFileMock).not.toHaveBeenCalled();
-  });
+  it.each(['get', 'list'] as const)(
+    '%s on a request already cancelled settles as RequestCancelled, never as a result',
+    async (action) => {
+      focusFiles({ assertions: assertionFor(DND), modes: MODE_CONFIGURATIONS });
+      const controller = new AbortController();
+      controller.abort();
+      const result = await runToolContract(
+        macosManageFocus,
+        { action },
+        { context: { signal: controller.signal } },
+      );
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { code: JsonRpcErrorCode.RequestCancelled },
+      });
+      expect(result.structuredContent).not.toHaveProperty('status');
+      expect(result.structuredContent).not.toHaveProperty('modes');
+    },
+  );
 
   it('get cancelled while the state file is read rethrows the AbortError, not status unknown', async () => {
     const controller = new AbortController();
-    // The cancel lands mid-read: a read whose signal fires rejects with an AbortError.
-    readFileMock.mockImplementationOnce(async (_path: string, opts: unknown) => {
-      controller.abort();
-      if ((opts as { signal?: AbortSignal }).signal?.aborted) throw abortError();
-      return ASSERTIONS_NO_RECORDS;
+    cancelDuringRead(controller, ASSERTIONS_PATH, {
+      assertions: assertionFor(DND),
+      modes: MODE_CONFIGURATIONS,
     });
     const err = await handlerError({ action: 'get' }, controller.signal);
     expect(err).toMatchObject({ name: 'AbortError', code: 'ABORT_ERR' });
+    expect(filesRead()).toEqual(['Assertions.json']);
+  });
+
+  it('get cancelled while ModeConfigurations.json is read rethrows the AbortError, not mode_name null', async () => {
+    const controller = new AbortController();
+    cancelDuringRead(controller, MODES_PATH, {
+      assertions: assertionFor(DND),
+      modes: MODE_CONFIGURATIONS,
+    });
+    const err = await handlerError({ action: 'get' }, controller.signal);
+    expect(err).toMatchObject({ name: 'AbortError', code: 'ABORT_ERR' });
+  });
+
+  it('list cancelled while ModeConfigurations.json is read rethrows the AbortError, not a read failure', async () => {
+    const controller = new AbortController();
+    cancelDuringRead(controller, MODES_PATH, { modes: MODE_CONFIGURATIONS });
+    const err = await handlerError({ action: 'list' }, controller.signal);
+    expect(err).toMatchObject({ name: 'AbortError', code: 'ABORT_ERR' });
+    expect(err).not.toHaveProperty('data');
   });
 });
 
@@ -506,11 +926,15 @@ describe('macosManageFocus set', () => {
     ).not.toThrow();
   });
 
-  it('declares no focus_not_found reason', () => {
+  it('declares full_disk_access_required beside the set reasons, and no focus_not_found', () => {
     expect(macosManageFocus.errors?.map((e) => e.reason)).toEqual([
       'shortcuts_unavailable',
       'shortcut_failed',
+      'full_disk_access_required',
     ]);
+    expect(
+      macosManageFocus.errors?.find((e) => e.reason === 'full_disk_access_required')?.recovery,
+    ).toBe(FULL_DISK_ACCESS_RECOVERY);
   });
 
   it('set with a blank mode is rejected by the input schema', () => {

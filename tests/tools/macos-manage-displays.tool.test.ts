@@ -2,7 +2,7 @@
  * @fileoverview Tests for macos_manage_displays tool, through the real
  * DisplayService over a faked `execFile`: displayplacer prints a one-display
  * listing for `list` and nothing for a layout, and osascript prints the
- * NSScreen numbers the test sets. PATH holds only a temporary directory with an
+ * NSScreen numbers and scale factors the test sets. PATH holds only a temporary directory with an
  * executable `displayplacer`, so the lookup never depends on this host.
  * MACOS_DISPLAY_LAYOUTS comes from a stubbed server config.
  * @module tests/tools/macos-manage-displays.tool.test
@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Shape of the mocked `execFile`. Callers wrap it in `promisify`, and the module
@@ -43,11 +43,20 @@ import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
 import { initDisplayService } from '@/services/display/display-service.js';
 import { commonMarkBlocks } from '../helpers/commonmark.js';
 
-/** The one directory on PATH, holding an executable `displayplacer` the fake answers for. */
-const BIN_DIR = mkdtempSync('/tmp/macos-mcp-displays-');
-const DISPLAYPLACER = join(BIN_DIR, 'displayplacer');
-writeFileSync(DISPLAYPLACER, '');
-chmodSync(DISPLAYPLACER, 0o755);
+/**
+ * The one directory on PATH, holding an executable `displayplacer` the fake
+ * answers for. Made in beforeAll, never at collection, so a run that skips this
+ * file's tests leaves nothing in /tmp.
+ */
+let BIN_DIR = '';
+let DISPLAYPLACER = '';
+
+beforeAll(() => {
+  BIN_DIR = mkdtempSync('/tmp/macos-mcp-displays-');
+  DISPLAYPLACER = join(BIN_DIR, 'displayplacer');
+  writeFileSync(DISPLAYPLACER, '');
+  chmodSync(DISPLAYPLACER, 0o755);
+});
 
 const CURRENT_CONFIG =
   'displayplacer "id:abc123 res:2560x1600 hz:60 color_depth:8 enabled:true scaling:on origin:(0,0) degree:0"';
@@ -71,7 +80,10 @@ const LISTING = [
   CURRENT_CONFIG,
 ].join('\n\n');
 
-/** The display LISTING describes, without the index the NSScreen read adds. */
+/** The NSScreen read for LISTING's display: screen number 1, the main display, backed at 2x. */
+const SCREEN_1 = '[{"number":1,"scale_factor":2}]\n';
+
+/** The display LISTING describes, without the index and scale_factor the NSScreen read adds. */
 const DISPLAY = {
   id: 'abc123',
   type: 'MacBook built in screen',
@@ -102,7 +114,7 @@ const INVALID_LAYOUTS = [
 ] as const;
 
 const INDEX_NOTICE =
-  "index is omitted from every display: the NSScreen read failed (its output was not a JSON list of screen numbers). Retry macos_manage_displays action=list to get each display's index.";
+  "index and scale_factor are omitted from every display: the NSScreen read failed (its output was not a JSON list of screen numbers and scale factors). Retry macos_manage_displays action=list to get each display's index and scale_factor.";
 
 const invalidLayoutsNotice = (problem: string) =>
   `MACOS_DISPLAY_LAYOUTS is invalid (${problem}), so layouts is omitted. Set it to a JSON object mapping each layout name to its displayplacer argument string.`;
@@ -133,14 +145,21 @@ const blocksOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
   (result.content ?? []).map((b) => ('text' in b ? String(b.text) : `<${b.type}>`));
 
 /**
- * The content blocks of a listing of DISPLAY at `index`: format()'s block, then
- * the enrichment trailer carrying `notice` when there is one.
+ * The content blocks of a listing of DISPLAY at the `[index, scale_factor]` the
+ * NSScreen read gave it (`undefined` when the read failed): format()'s block,
+ * then the enrichment trailer carrying `notice` when there is one.
  */
-function listingBlocks(index: string | undefined, layouts?: string, notice?: string): string[] {
+function listingBlocks(
+  screen: readonly [index: string, scale: string] | undefined,
+  layouts?: string,
+  notice?: string,
+): string[] {
+  const [index, scale] =
+    screen === undefined ? ['', ''] : [`index: ${screen[0]} `, ` scale_factor: ${screen[1]}`];
   const listing = [
     '**action:** list',
     '## Connected Displays (1)',
-    `${index === undefined ? '' : `index: ${index} `}id: abc123 type: \`MacBook built in screen\` resolution: 2560x1600 hz: 60`,
+    `${index}id: abc123 type: \`MacBook built in screen\` resolution: 2560x1600${scale} hz: 60`,
     'origin: (0,0) rotation: 0 scaling: on enabled: true',
     '**current_config:**',
     '```',
@@ -167,7 +186,7 @@ beforeEach(() => {
   vi.stubEnv('PATH', BIN_DIR);
   execFileMock.mockReset();
   initDisplayService({} as never, {} as never);
-  answer('[1]\n');
+  answer(SCREEN_1);
   useLayouts('{}');
 });
 
@@ -184,26 +203,38 @@ describe('macosManageDisplays list', () => {
     {
       label: 'two configured layouts',
       layouts: TWO_LAYOUTS,
-      screens: '[1]\n',
+      screens: SCREEN_1,
       structured: {
         action: 'list',
-        displays: [{ index: 0, ...DISPLAY }],
+        displays: [{ index: 0, scale_factor: 2, ...DISPLAY }],
         current_config: CURRENT_CONFIG,
         layouts: ['desk', 'travel'],
       },
-      blocks: listingBlocks('0', '`desk`, `travel`'),
+      blocks: listingBlocks(['0', '2'], '`desk`, `travel`'),
     },
     {
       label: 'no configured layouts',
       layouts: '{}',
-      screens: '[1]\n',
+      screens: SCREEN_1,
       structured: {
         action: 'list',
-        displays: [{ index: 0, ...DISPLAY }],
+        displays: [{ index: 0, scale_factor: 2, ...DISPLAY }],
         current_config: CURRENT_CONFIG,
         layouts: [],
       },
-      blocks: listingBlocks('0', '[]'),
+      blocks: listingBlocks(['0', '2'], '[]'),
+    },
+    {
+      label: 'a display at 1x',
+      layouts: '{}',
+      screens: '[{"number":1,"scale_factor":1}]\n',
+      structured: {
+        action: 'list',
+        displays: [{ index: 0, scale_factor: 1, ...DISPLAY }],
+        current_config: CURRENT_CONFIG,
+        layouts: [],
+      },
+      blocks: listingBlocks(['0', '1'], '[]'),
     },
     {
       label: 'a display with no NSScreen entry',
@@ -211,11 +242,11 @@ describe('macosManageDisplays list', () => {
       screens: '[]\n',
       structured: {
         action: 'list',
-        displays: [{ index: null, ...DISPLAY }],
+        displays: [{ index: null, scale_factor: null, ...DISPLAY }],
         current_config: CURRENT_CONFIG,
         layouts: [],
       },
-      blocks: listingBlocks('null', '[]'),
+      blocks: listingBlocks(['null', 'null'], '[]'),
     },
     {
       label: 'an NSScreen read that fails',
@@ -247,7 +278,7 @@ describe('macosManageDisplays list', () => {
       ),
     },
   ])(
-    'list with $label reports the displays, index, layouts, and notice on both surfaces',
+    'list with $label reports the displays, index, scale_factor, layouts, and notice on both surfaces',
     async ({ layouts, screens, structured, blocks }) => {
       useLayouts(layouts);
       answer(screens);
@@ -266,6 +297,17 @@ describe('macosManageDisplays list', () => {
       macosManageDisplays.output.parse({
         action: 'list',
         displays: [{ ...DISPLAY, index }],
+        current_config: CURRENT_CONFIG,
+        layouts: [],
+      }),
+    ).toThrow();
+  });
+
+  it.each([0, -2, '2'])('output rejects scale_factor %j', (scale_factor) => {
+    expect(() =>
+      macosManageDisplays.output.parse({
+        action: 'list',
+        displays: [{ ...DISPLAY, index: 0, scale_factor }],
         current_config: CURRENT_CONFIG,
         layouts: [],
       }),
@@ -294,12 +336,12 @@ describe('macosManageDisplays reads MACOS_DISPLAY_LAYOUTS', () => {
       const listed = await runToolContract(macosManageDisplays, { action: 'list' });
       expect(listed.structuredContent).toEqual({
         action: 'list',
-        displays: [{ index: 0, ...DISPLAY }],
+        displays: [{ index: 0, scale_factor: 2, ...DISPLAY }],
         current_config: CURRENT_CONFIG,
         notice: invalidLayoutsNotice(problem),
       });
       expect(blocksOf(listed)).toEqual(
-        listingBlocks('0', undefined, invalidLayoutsNotice(problem)),
+        listingBlocks(['0', '2'], undefined, invalidLayoutsNotice(problem)),
       );
     },
   );
@@ -424,14 +466,14 @@ describe('macosManageDisplays format renders upstream and configured text as lit
           .join('\n');
       const listed = text({
         action: 'list',
-        displays: [{ index: 0, ...DISPLAY, type: value }],
+        displays: [{ index: 0, scale_factor: 2, ...DISPLAY, type: value }],
         current_config: CURRENT_CONFIG,
         layouts: [value, `${value} 2`],
       });
       expect(commonMarkBlocks(listed)).toEqual([
         'action: list',
         'Connected Displays (1)',
-        `index: 0 id: abc123 type: ${value} resolution: 2560x1600 hz: 60\norigin: (0,0) rotation: 0 scaling: on enabled: true\ncurrent_config:`,
+        `index: 0 id: abc123 type: ${value} resolution: 2560x1600 scale_factor: 2 hz: 60\norigin: (0,0) rotation: 0 scaling: on enabled: true\ncurrent_config:`,
         CURRENT_CONFIG,
         `layouts: ${value}, ${value} 2`,
       ]);
@@ -456,6 +498,21 @@ describe('macosManageDisplays descriptions', () => {
       'enabled',
       display.enabled.description,
       'True when the display is active or part of a mirroring set, so a display mirroring another reads true; false when it is disabled.',
+    ],
+    [
+      'resolution',
+      display.resolution.description,
+      'Current size of the display in points, as "<width>x<height>", e.g. "1512x982" for a Retina panel 3024x1964 pixels in size (scale_factor 2).',
+    ],
+    [
+      'origin',
+      display.origin.description,
+      'Top-left corner of the display in global display coordinates, in points, as "(x,y)": the main display\'s top-left corner is "(0,0)", x grows rightward and y downward, so a display left of or above it has a negative coordinate. macos_manage_windows bounds use the same coordinates.',
+    ],
+    [
+      'scale_factor',
+      display.scale_factor.description,
+      "Pixels per point on this display, macOS's backingScaleFactor for its screen: 2 for a Retina display, 1 for most others. resolution, origin, and window bounds are in points; a pixel size measured on this display alone, such as a screenshot of it, is its size in points × scale_factor. null when index is null; absent when index is absent.",
     ],
     [
       'layout_name',
@@ -483,7 +540,7 @@ describe('macosManageDisplays descriptions', () => {
       },
     );
     expect(macosManageDisplays.description).toBe(
-      "List connected displays with their current layout (resolution, position, rotation, scaling) and each display's index, the display_index macos_take_screenshot and macos_manage_windows use, or apply a pre-configured display layout by name. Requires displayplacer CLI (brew install displayplacer). Layouts are pre-configured in the MACOS_DISPLAY_LAYOUTS environment variable as a JSON object mapping names to displayplacer argument strings; action=list returns their names as layouts. Layout application only accepts named presets — raw displayplacer args are never accepted from the user.",
+      "List connected displays with their current layout (resolution and position in points, rotation, scaling), each display's scale_factor (pixels per point), and each display's index, the display_index macos_take_screenshot and macos_manage_windows use, or apply a pre-configured display layout by name. Requires displayplacer CLI (brew install displayplacer). Layouts are pre-configured in the MACOS_DISPLAY_LAYOUTS environment variable as a JSON object mapping names to displayplacer argument strings; action=list returns their names as layouts. Layout application only accepts named presets — raw displayplacer args are never accepted from the user.",
     );
   });
 });

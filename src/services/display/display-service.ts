@@ -1,6 +1,8 @@
 /**
  * @fileoverview Display management service using the displayplacer CLI, with
- * each display's position in `NSScreen.screens` read through JXA.
+ * each display's position in `NSScreen.screens` and its backing scale factor
+ * read through JXA. Owns the display listing schema that macos_manage_displays
+ * and macos://displays both return.
  * @module services/display/display-service
  */
 
@@ -78,18 +80,28 @@ type BlockLine = (typeof BLOCK_LINES)[number];
  */
 const ARRANGEMENT_COMMAND = /^displayplacer(?:[ \t]+"[^"\n]*")*[ \t]*$/gm;
 
-/** NSScreenNumber of each `NSScreen.screens` entry, in order; entry 0 is the main display. */
-const SCREEN_NUMBERS_JXA = `
+/**
+ * The NSScreenNumber and backingScaleFactor of each `NSScreen.screens` entry,
+ * in order; entry 0 is the main display. Both go through `Number()` so each
+ * reaches `JSON.stringify` as a JS number, never as a bridged ObjC object.
+ */
+const SCREENS_JXA = `
   ObjC.import('AppKit');
   const screens = $.NSScreen.screens;
-  const numbers = [];
+  const read = [];
   for (let i = 0; i < screens.count; i++) {
-    numbers.push(Number(ObjC.unwrap(screens.objectAtIndex(i).deviceDescription.objectForKey('NSScreenNumber'))));
+    const screen = screens.objectAtIndex(i);
+    read.push({
+      number: Number(ObjC.unwrap(screen.deviceDescription.objectForKey('NSScreenNumber'))),
+      scale_factor: Number(screen.backingScaleFactor),
+    });
   }
-  JSON.stringify(numbers);
+  JSON.stringify(read);
 `;
 
-const ScreenNumbersSchema = z.array(z.number().int().nonnegative());
+const ScreensSchema = z.array(
+  z.object({ number: z.number().int().nonnegative(), scale_factor: z.number().positive() }),
+);
 
 /**
  * displayplacer annotates some field values with a trailing ` - <note>`
@@ -100,34 +112,82 @@ function stripAnnotation(value: string): string {
   return value.split(' - ')[0]?.trim() ?? '';
 }
 
-export interface DisplayInfo {
-  enabled: boolean;
-  hz: string;
-  id: string;
-  /**
-   * 0-based position in `NSScreen.screens`; null when the display has no
-   * NSScreen entry, absent when the NSScreen read failed.
-   */
-  index?: number | null;
-  origin: string;
-  resolution: string;
-  rotation: string;
-  scaling: string;
-  type: string;
-}
+/**
+ * One display as macos_manage_displays action=list and macos://displays return
+ * it. `index` and `scale_factor` come from the NSScreen read: null when the
+ * display has no NSScreen entry, absent when the read failed.
+ */
+export const DisplayInfoSchema = z
+  .object({
+    index: z
+      .number()
+      .int()
+      .min(0)
+      .nullable()
+      .optional()
+      .describe(
+        "0-based position in macOS's screen list (NSScreen.screens), where 0 is the main display: the display_index macos_take_screenshot captures and macos_manage_windows reports. null when the display has no screen in that list, such as a disabled display. Absent only when the screen list could not be read; notice says why.",
+      ),
+    scale_factor: z
+      .number()
+      .positive()
+      .nullable()
+      .optional()
+      .describe(
+        "Pixels per point on this display, macOS's backingScaleFactor for its screen: 2 for a Retina display, 1 for most others. resolution, origin, and window bounds are in points; a pixel size measured on this display alone, such as a screenshot of it, is its size in points × scale_factor. null when index is null; absent when index is absent.",
+      ),
+    id: z.string().describe('Persistent display identifier assigned by macOS.'),
+    type: z
+      .string()
+      .describe(
+        'How displayplacer describes the display: "MacBook built in screen" for a built-in panel, "<N> inch external screen" (the diagonal) for any other.',
+      ),
+    resolution: z
+      .string()
+      .describe(
+        'Current size of the display in points, as "<width>x<height>", e.g. "1512x982" for a Retina panel 3024x1964 pixels in size (scale_factor 2).',
+      ),
+    hz: z.string().describe('Refresh rate, e.g. "60"; "N/A" when macOS reports none.'),
+    origin: z
+      .string()
+      .describe(
+        'Top-left corner of the display in global display coordinates, in points, as "(x,y)": the main display\'s top-left corner is "(0,0)", x grows rightward and y downward, so a display left of or above it has a negative coordinate. macos_manage_windows bounds use the same coordinates.',
+      ),
+    rotation: z.string().describe('Display rotation in degrees, e.g. "0".'),
+    scaling: z.string().describe('Scaling mode, e.g. "on" or "off".'),
+    enabled: z
+      .boolean()
+      .describe(
+        'True when the display is active or part of a mirroring set, so a display mirroring another reads true; false when it is disabled.',
+      ),
+  })
+  .describe('Connected display with its current layout configuration.');
 
-export interface DisplayListing {
-  current_config: string;
-  displays: DisplayInfo[];
-  /** Why no display carries `index`: set only when the NSScreen read failed. */
-  notice?: string;
-}
+export type DisplayInfo = z.infer<typeof DisplayInfoSchema>;
+
+/** The display listing: what macos://displays returns as-is. */
+export const DisplayListingSchema = z.object({
+  displays: z.array(DisplayInfoSchema).describe('Connected displays.'),
+  current_config: z
+    .string()
+    .describe('displayplacer command that reproduces the active arrangement.'),
+  notice: z
+    .string()
+    .optional()
+    .describe(
+      'Present only when the screen list could not be read: why no display has index or scale_factor.',
+    ),
+});
+
+export type DisplayListing = z.infer<typeof DisplayListingSchema>;
 
 /** A parsed display block, with the CGDirectDisplayID that joins it to NSScreen. */
-type ParsedDisplay = Omit<DisplayInfo, 'index'> & { displayId: number };
+type ParsedDisplay = Omit<DisplayInfo, 'index' | 'scale_factor'> & { displayId: number };
 
-/** The NSScreen read: the screen numbers in order, or why they could not be read. */
-type ScreenNumbers = { ok: true; numbers: number[] } | { ok: false; detail: string };
+/** The NSScreen read: each screen's number and scale factor in order, or why they could not be read. */
+type ScreenRead =
+  | { ok: true; screens: z.infer<typeof ScreensSchema> }
+  | { ok: false; detail: string };
 
 /**
  * Bounds the NSScreen read, including any wait for System Events process
@@ -137,15 +197,15 @@ type ScreenNumbers = { ok: true; numbers: number[] } | { ok: false; detail: stri
 const SCREEN_READ_TIMEOUT_MS = 15_000;
 
 /**
- * Reads the NSScreenNumber (the CGDirectDisplayID) of each `NSScreen.screens`
- * entry. Runs in an osascript process of its own: AppKit and System Events in
- * one JXA process fail with "Can't convert types". It takes the `nsscreen-read`
- * side of the exclusion, so it never runs while one of this server's System
- * Events process enumerations does. Best effort — a failure comes back as its
- * detail for the caller to disclose, except the caller's own cancellation,
- * which is rethrown.
+ * Reads the NSScreenNumber (the CGDirectDisplayID) and backingScaleFactor of
+ * each `NSScreen.screens` entry. Runs in an osascript process of its own:
+ * AppKit and System Events in one JXA process fail with "Can't convert types".
+ * It takes the `nsscreen-read` side of the exclusion, so it never runs while
+ * one of this server's System Events process enumerations does. Best effort —
+ * a failure comes back as its detail for the caller to disclose, except the
+ * caller's own cancellation, which is rethrown.
  */
-async function readScreenNumbers(ctx: Context): Promise<ScreenNumbers> {
+async function readScreens(ctx: Context): Promise<ScreenRead> {
   let stdout: string;
   try {
     ({ stdout } = await runExclusive(
@@ -153,7 +213,7 @@ async function readScreenNumbers(ctx: Context): Promise<ScreenNumbers> {
       ctx.signal,
       SCREEN_READ_TIMEOUT_MS,
       (remainingMs) =>
-        execFile(SYSTEM_BINARIES.osascript, ['-l', 'JavaScript', '-e', SCREEN_NUMBERS_JXA], {
+        execFile(SYSTEM_BINARIES.osascript, ['-l', 'JavaScript', '-e', SCREENS_JXA], {
           timeout: remainingMs,
           signal: ctx.signal,
         }),
@@ -165,10 +225,10 @@ async function readScreenNumbers(ctx: Context): Promise<ScreenNumbers> {
       err instanceof McpError ? err.message : `osascript failed: ${execFailureDetail(err)}`;
     return { ok: false, detail };
   }
-  const numbers = parseJsonOutput(ScreenNumbersSchema, stdout);
-  return numbers
-    ? { ok: true, numbers }
-    : { ok: false, detail: 'its output was not a JSON list of screen numbers' };
+  const screens = parseJsonOutput(ScreensSchema, stdout);
+  return screens
+    ? { ok: true, screens }
+    : { ok: false, detail: 'its output was not a JSON list of screen numbers and scale factors' };
 }
 
 export class DisplayService {
@@ -200,27 +260,32 @@ export class DisplayService {
 
   async listDisplays(ctx: Context): Promise<DisplayListing> {
     const displayplacer = await this.locate();
-    const [listing, screens] = await Promise.allSettled([
+    const [listing, read] = await Promise.allSettled([
       this.run(displayplacer, ['list'], ctx),
-      readScreenNumbers(ctx),
+      readScreens(ctx),
     ]);
     if (listing.status === 'rejected') throw listing.reason;
-    if (screens.status === 'rejected') throw screens.reason;
+    if (read.status === 'rejected') throw read.reason;
 
     const parsed = this.parseDisplayList(listing.value);
     const current_config = this.extractCurrentConfig(listing.value);
-    if (!screens.value.ok) {
+    if (!read.value.ok) {
       return {
         displays: parsed.map(({ displayId: _, ...display }) => display),
         current_config,
-        notice: `index is omitted from every display: the NSScreen read failed (${screens.value.detail}). Retry macos_manage_displays action=list to get each display's index.`,
+        notice: `index and scale_factor are omitted from every display: the NSScreen read failed (${read.value.detail}). Retry macos_manage_displays action=list to get each display's index and scale_factor.`,
       };
     }
-    const { numbers } = screens.value;
+    const { screens } = read.value;
     return {
       displays: parsed.map(({ displayId, ...display }) => {
-        const index = numbers.indexOf(displayId);
-        return { index: index === -1 ? null : index, ...display };
+        const index = screens.findIndex((screen) => screen.number === displayId);
+        const screen = screens[index];
+        return {
+          index: screen ? index : null,
+          scale_factor: screen ? screen.scale_factor : null,
+          ...display,
+        };
       }),
       current_config,
     };

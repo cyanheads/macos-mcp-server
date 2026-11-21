@@ -46,7 +46,6 @@ function install(...paths: string[]): void {
 describe('SYSTEM_BINARIES', () => {
   it('names each system binary by the absolute path it has on macOS', () => {
     expect(SYSTEM_BINARIES).toEqual({
-      defaults: '/usr/bin/defaults',
       ifconfig: '/sbin/ifconfig',
       kill: '/bin/kill',
       networksetup: '/usr/sbin/networksetup',
@@ -66,7 +65,7 @@ describe('SYSTEM_BINARIES', () => {
 
   it('every entry is an absolute path to a binary of the same name', () => {
     const entries = Object.entries(SYSTEM_BINARIES);
-    expect(entries.length).toBe(14);
+    expect(entries.length).toBe(13);
     for (const [name, path] of entries) {
       expect(isAbsolute(path), path).toBe(true);
       expect(basename(path)).toBe(name);

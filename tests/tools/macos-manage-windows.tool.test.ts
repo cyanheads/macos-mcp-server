@@ -1708,3 +1708,31 @@ describe('macosManageWindows content[] parity under a CommonMark parse', () => {
     },
   );
 });
+
+describe('macosManageWindows describes bounds as points in global display coordinates', () => {
+  const input = macosManageWindows.input.shape;
+  const output = macosManageWindows.output.shape;
+  const listed = output.windows.unwrap().element.shape;
+  const written = output.window.unwrap().shape;
+
+  it.each([
+    ['input', input],
+    ['a listed window', listed],
+    ['the written window', written],
+  ] as const)('%s: x, y, width, and height are points, never pixels', (_where, shape) => {
+    for (const field of ['x', 'y', 'width', 'height'] as const) {
+      const description = shape[field].description ?? '';
+      expect(description).toContain('in points');
+      expect(description).not.toMatch(/pixel/i);
+    }
+    for (const field of ['x', 'y'] as const) {
+      expect(shape[field].description).toContain('in points in global display coordinates');
+    }
+  });
+
+  it('the tool description says bounds are points in the coordinates macos_manage_displays reports', () => {
+    expect(macosManageWindows.description).toContain(
+      "Bounds (x, y, width, height) are points in global display coordinates, the coordinates macos_manage_displays reports each display's origin and resolution in, not pixels.",
+    );
+  });
+});

@@ -30,10 +30,18 @@ const WindowSchema = z
         'Process name of the app the window belongs to, as System Events reports it (e.g. "firefox" for Firefox).',
       ),
     title: z.string().describe('Window title.'),
-    x: z.number().describe('Window left edge position in screen coordinates.'),
-    y: z.number().describe('Window top edge position in screen coordinates.'),
-    width: z.number().describe('Window width in pixels.'),
-    height: z.number().describe('Window height in pixels.'),
+    x: z
+      .number()
+      .describe(
+        "Window left edge, in points in global display coordinates: 0 is the main display's left edge, and x grows rightward.",
+      ),
+    y: z
+      .number()
+      .describe(
+        "Window top edge, in points in global display coordinates: 0 is the main display's top edge, and y grows downward.",
+      ),
+    width: z.number().describe('Window width in points.'),
+    height: z.number().describe('Window height in points.'),
     minimized: z
       .boolean()
       .nullable()
@@ -85,7 +93,7 @@ type ScreenFrame = z.infer<typeof ScreenFramesSchema>[number];
 export const macosManageWindows = tool('macos_manage_windows', {
   title: 'Manage macOS Windows',
   description:
-    "Window operations across all visible apps: list all windows with their bounds and state, focus a window, move or resize a window, minimize/restore, enter or exit fullscreen, or close. Every action, list included, scripts System Events and requires Accessibility. Every action except list targets one window: the one titled window_title, or app_name's frontmost window (window_title takes precedence when both are given). Focus raises the window and brings its app forward, as fullscreen does before it changes a window; no action launches an app.",
+    "Window operations across all visible apps: list all windows with their bounds and state, focus a window, move or resize a window, minimize/restore, enter or exit fullscreen, or close. Every action, list included, scripts System Events and requires Accessibility. Every action except list targets one window: the one titled window_title, or app_name's frontmost window (window_title takes precedence when both are given). Focus raises the window and brings its app forward, as fullscreen does before it changes a window; no action launches an app. Bounds (x, y, width, height) are points in global display coordinates, the coordinates macos_manage_displays reports each display's origin and resolution in, not pixels.",
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   input: withActionRequirements(
     z.object({
@@ -107,21 +115,25 @@ export const macosManageWindows = tool('macos_manage_windows', {
       x: z
         .number()
         .optional()
-        .describe('Left edge x-coordinate for move/move_resize. Screen coordinates.'),
+        .describe(
+          "Left edge for move/move_resize, in points in global display coordinates: 0 is the main display's left edge, and x grows rightward.",
+        ),
       y: z
         .number()
         .optional()
-        .describe('Top edge y-coordinate for move/move_resize. Screen coordinates.'),
+        .describe(
+          "Top edge for move/move_resize, in points in global display coordinates: 0 is the main display's top edge, and y grows downward.",
+        ),
       width: z
         .number()
         .positive()
         .optional()
-        .describe('Window width in pixels for resize/move_resize. Must be greater than 0.'),
+        .describe('Window width in points for resize/move_resize. Must be greater than 0.'),
       height: z
         .number()
         .positive()
         .optional()
-        .describe('Window height in pixels for resize/move_resize. Must be greater than 0.'),
+        .describe('Window height in points for resize/move_resize. Must be greater than 0.'),
       minimized: z
         .boolean()
         .optional()

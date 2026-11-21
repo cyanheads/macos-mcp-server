@@ -44,6 +44,22 @@ export interface AudioDevice {
   type: 'input' | 'output';
 }
 
+/**
+ * The device names `device` could mean, from the names of one type in list
+ * order: a name identical to `device` when exactly one device holds it;
+ * otherwise every name equal to `device` ignoring case, or, when there is none,
+ * every name containing it ignoring case. More than one is ambiguous, and so
+ * are identical names: SwitchAudioSource `-s` matches a name with `strcmp` and
+ * reaches only the first device holding it.
+ */
+function candidateNames(names: string[], device: string): string[] {
+  const identical = names.filter((name) => name === device);
+  if (identical.length === 1) return identical;
+  const wanted = device.toLowerCase();
+  const equal = names.filter((name) => name.toLowerCase() === wanted);
+  return equal.length > 0 ? equal : names.filter((name) => name.toLowerCase().includes(wanted));
+}
+
 export class AudioService {
   private async run(args: string[], ctx: Context): Promise<string> {
     ctx.log.debug('SwitchAudioSource', { args });
@@ -97,14 +113,23 @@ export class AudioService {
     return out.trim();
   }
 
-  async switchDevice(name: string, type: 'input' | 'output', ctx: Context): Promise<void> {
-    // Validate against known device list before passing to CLI
+  /**
+   * Switches the default `type` device to the one `device` names (see
+   * `candidateNames`). Throws `device_not_found` when no name of that type
+   * contains `device`, and `device_ambiguous` when more than one could be
+   * meant — both before any switch runs.
+   */
+  async switchDevice(device: string, type: 'input' | 'output', ctx: Context): Promise<void> {
     const devices = await this.listDevices(ctx, type);
-    const match = devices.find((d) => d.name.toLowerCase().includes(name.toLowerCase()));
-    if (!match) {
+    const names = candidateNames(
+      devices.map((d) => d.name),
+      device,
+    );
+    const [match] = names;
+    if (match === undefined) {
       throw new McpError(
         JsonRpcErrorCode.NotFound,
-        `No ${type} device matching ${quotedText(name)} found.`,
+        `No ${type} device matching ${quotedText(device)} found.`,
         {
           reason: 'device_not_found',
           recovery: {
@@ -113,8 +138,20 @@ export class AudioService {
         },
       );
     }
-    // Use exact matched name — never raw user input
-    await this.run(['-s', match.name, '-t', type], ctx);
+    if (names.length > 1) {
+      throw new McpError(
+        JsonRpcErrorCode.ValidationError,
+        `${quotedText(device)} matches ${names.length} ${type} devices: ${names.map(quotedText).join(', ')}. The default ${type} device is unchanged.`,
+        {
+          reason: 'device_ambiguous',
+          recovery: {
+            hint: 'Call again with the full name of one device, exactly as macos_control_audio action=list returns it. Devices that share one name cannot be told apart by name; choose between them in System Settings > Sound.',
+          },
+        },
+      );
+    }
+    // The listed name, never the caller's text, reaches SwitchAudioSource.
+    await this.run(['-s', match, '-t', type], ctx);
   }
 }
 

@@ -7,39 +7,9 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
 import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
-import { getDisplayService } from '@/services/display/display-service.js';
+import { DisplayInfoSchema, getDisplayService } from '@/services/display/display-service.js';
 import { markdownLiteral } from '@/utils/markdown-literal.js';
 import { quotedText } from '@/utils/quoted-text.js';
-
-const DisplayInfoSchema = z
-  .object({
-    index: z
-      .number()
-      .int()
-      .min(0)
-      .nullable()
-      .optional()
-      .describe(
-        "0-based position in macOS's screen list (NSScreen.screens), where 0 is the main display: the display_index macos_take_screenshot captures and macos_manage_windows reports. null when the display has no screen in that list, such as a disabled display. Absent only when the screen list could not be read; notice says why.",
-      ),
-    id: z.string().describe('Persistent display identifier assigned by macOS.'),
-    type: z
-      .string()
-      .describe(
-        'How displayplacer describes the display: "MacBook built in screen" for a built-in panel, "<N> inch external screen" (the diagonal) for any other.',
-      ),
-    resolution: z.string().describe('Current resolution, e.g. "2560x1440".'),
-    hz: z.string().describe('Refresh rate, e.g. "60"; "N/A" when macOS reports none.'),
-    origin: z.string().describe('Position origin in the global display arrangement, e.g. "(0,0)".'),
-    rotation: z.string().describe('Display rotation in degrees, e.g. "0".'),
-    scaling: z.string().describe('Scaling mode, e.g. "on" or "off".'),
-    enabled: z
-      .boolean()
-      .describe(
-        'True when the display is active or part of a mirroring set, so a display mirroring another reads true; false when it is disabled.',
-      ),
-  })
-  .describe('Connected display with its current layout configuration.');
 
 /** The MACOS_DISPLAY_LAYOUTS value parsed, or what is wrong with it. */
 type LayoutsConfig = { ok: true; layouts: Map<string, string> } | { ok: false; problem: string };
@@ -74,7 +44,7 @@ function parseLayouts(raw: string): LayoutsConfig {
 export const macosManageDisplays = tool('macos_manage_displays', {
   title: 'Manage macOS Displays',
   description:
-    "List connected displays with their current layout (resolution, position, rotation, scaling) and each display's index, the display_index macos_take_screenshot and macos_manage_windows use, or apply a pre-configured display layout by name. Requires displayplacer CLI (brew install displayplacer). Layouts are pre-configured in the MACOS_DISPLAY_LAYOUTS environment variable as a JSON object mapping names to displayplacer argument strings; action=list returns their names as layouts. Layout application only accepts named presets — raw displayplacer args are never accepted from the user.",
+    "List connected displays with their current layout (resolution and position in points, rotation, scaling), each display's scale_factor (pixels per point), and each display's index, the display_index macos_take_screenshot and macos_manage_windows use, or apply a pre-configured display layout by name. Requires displayplacer CLI (brew install displayplacer). Layouts are pre-configured in the MACOS_DISPLAY_LAYOUTS environment variable as a JSON object mapping names to displayplacer argument strings; action=list returns their names as layouts. Layout application only accepts named presets — raw displayplacer args are never accepted from the user.",
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: withActionRequirements(
     z.object({
@@ -125,7 +95,7 @@ export const macosManageDisplays = tool('macos_manage_displays', {
       .string()
       .optional()
       .describe(
-        'Present for action=list when index or layouts could not be read: names what failed and what to do.',
+        'Present for action=list when index and scale_factor, or layouts, could not be read: names what failed and what to do.',
       ),
   },
   // The notice can carry osascript's error text and layout names, so it renders as a literal.
@@ -216,14 +186,16 @@ export const macosManageDisplays = tool('macos_manage_displays', {
     if (result.displays !== undefined) {
       lines.push(`## Connected Displays (${result.displays.length})`);
       for (const d of result.displays) {
+        // Both come from the NSScreen read, so both are absent when it failed.
         const index = d.index === undefined ? '' : `index: ${d.index} `;
+        const scale = d.scale_factor === undefined ? '' : ` scale_factor: ${d.scale_factor}`;
         /**
          * type is displayplacer's prose, so it renders as a literal; the other
          * fields are the ids, numbers, coordinates, and on/off it prints in fixed
          * formats, which carry no markup.
          */
         lines.push(
-          `${index}id: ${d.id} type: ${markdownLiteral(d.type)} resolution: ${d.resolution} hz: ${d.hz}`,
+          `${index}id: ${d.id} type: ${markdownLiteral(d.type)} resolution: ${d.resolution}${scale} hz: ${d.hz}`,
         );
         lines.push(
           `origin: ${d.origin} rotation: ${d.rotation} scaling: ${d.scaling} enabled: ${d.enabled}`,

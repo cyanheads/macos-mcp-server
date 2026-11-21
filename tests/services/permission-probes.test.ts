@@ -115,6 +115,19 @@ const CHECKS = [
       'JSON.stringify({ status: $.AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false) });',
     ],
   },
+  {
+    // The same question about System Events, by the bundle identifier TCC keys it on.
+    name: 'checkAutomation(System Events)',
+    check: (ctx: Context) => checkAutomation('System Events', ctx),
+    lines: [
+      "ObjC.import('CoreServices');",
+      "ObjC.import('Foundation');",
+      "ObjC.bindFunction('AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]);",
+      'const typeWildCard = 0x2a2a2a2a;',
+      "const target = $.NSAppleEventDescriptor.descriptorWithBundleIdentifier('com.apple.systemevents');",
+      'JSON.stringify({ status: $.AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false) });',
+    ],
+  },
 ] as const;
 
 describe.each(CHECKS)('$name', ({ check, lines }) => {
@@ -182,6 +195,14 @@ describe.each<{ app: AutomationTarget; notAsked: string; notRunning: string }>([
       'macOS has not asked yet; it asks for consent the first time this host sends Music an Apple event',
     notRunning: 'Music is not running, and macOS answers this check only for a running app',
   },
+  {
+    app: 'System Events',
+    notAsked:
+      'macOS has not asked yet; it asks for consent the first time this host sends System Events an Apple event',
+    // System Events is not kept open: its not running says nothing about the grant.
+    notRunning:
+      'System Events is not running; it starts when a call scripts it and quits once idle, so this null says nothing about the grant',
+  },
 ])('checkAutomation($app) output', ({ app, notAsked, notRunning }) => {
   const STATUSES: Array<[number, string, PermissionCheck]> = [
     [0, 'noErr', { status: 'granted' }],
@@ -220,13 +241,14 @@ describe.each<{ app: AutomationTarget; notAsked: string; notRunning: string }>([
 });
 
 describe('every check', () => {
-  it('neither addresses another app, captures the screen, nor calls a prompting API', async () => {
+  it('neither addresses nor launches another app, captures the screen, nor calls a prompting API', async () => {
     prints('{"granted":true}');
     for (const { check } of CHECKS) await check(createMockContext());
     const scripts = execFileMock.mock.calls.map((c) => c[1][3]);
-    expect(scripts).toHaveLength(4);
+    expect(scripts).toHaveLength(5);
     for (const script of scripts) {
       expect(script).not.toMatch(/Application\(|tell application|doShellScript|screencapture/);
+      expect(script).not.toMatch(/NSWorkspace|launchApplication|openApplication|\.activate\(/);
       expect(script).not.toMatch(/CGRequestScreenCaptureAccess|AXIsProcessTrustedWithOptions/);
       expect(script).not.toMatch(/, true\)/);
     }

@@ -1,9 +1,9 @@
 /**
  * @fileoverview Prompt-free macOS permission checks. Each one calls Apple's own
  * preflight function through JXA (`ObjC.bindFunction`) in its own osascript
- * process. None sends an Apple event to another app, captures the screen, or
- * can show a permission prompt, and a check that cannot tell says why instead
- * of guessing.
+ * process. None sends an Apple event to another app, launches one, captures the
+ * screen, or can show a permission prompt, and a check that cannot tell says why
+ * instead of guessing.
  * @module services/permissions/permission-probes
  */
 
@@ -35,7 +35,11 @@ ObjC.bindFunction('CGPreflightScreenCaptureAccess', ['bool', []]);
 JSON.stringify({ granted: $.CGPreflightScreenCaptureAccess() });`;
 
 /** The apps whose Automation grant this server checks, with the bundle identifier TCC keys it on. */
-const AUTOMATION_TARGETS = { Finder: 'com.apple.finder', Music: 'com.apple.Music' } as const;
+const AUTOMATION_TARGETS = {
+  Finder: 'com.apple.finder',
+  Music: 'com.apple.Music',
+  'System Events': 'com.apple.systemevents',
+} as const;
 
 /** An app whose Automation grant `checkAutomation` can read. */
 export type AutomationTarget = keyof typeof AUTOMATION_TARGETS;
@@ -72,6 +76,16 @@ const unknown = (reason: string): PermissionCheck => ({ status: 'unknown', reaso
 const fromGranted = ({ granted }: z.infer<typeof GrantedOutput>): PermissionCheck =>
   granted ? { status: 'granted' } : { status: 'denied' };
 
+/**
+ * Why procNotFound leaves `app`'s grant unknown. Finder and Music stay open
+ * once started; System Events starts when a script addresses it and quits on
+ * its own once idle, so between calls its not running is the normal state.
+ */
+const notRunningReason = (app: AutomationTarget) =>
+  app === 'System Events'
+    ? 'System Events is not running; it starts when a call scripts it and quits once idle, so this null says nothing about the grant'
+    : `${app} is not running, and macOS answers this check only for a running app`;
+
 function fromAutomationStatus(
   { status }: z.infer<typeof StatusOutput>,
   app: AutomationTarget,
@@ -86,7 +100,7 @@ function fromAutomationStatus(
         `macOS has not asked yet; it asks for consent the first time this host sends ${app} an Apple event`,
       );
     case AE_STATUS.procNotFound:
-      return unknown(`${app} is not running, and macOS answers this check only for a running app`);
+      return unknown(notRunningReason(app));
     default:
       return unknown(`macOS answered with status ${status}, which this check does not recognize`);
   }
@@ -132,7 +146,7 @@ export function checkScreenRecording(ctx: Context): Promise<PermissionCheck> {
 /**
  * Automation > `app`, from `AEDeterminePermissionToAutomateTarget` with
  * `askUserIfNeeded` false. `unknown` while macOS has not asked yet and while
- * the app is not running.
+ * the app is not running; the check never starts the app to get an answer.
  */
 export function checkAutomation(app: AutomationTarget, ctx: Context): Promise<PermissionCheck> {
   return runProbe(

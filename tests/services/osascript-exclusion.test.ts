@@ -360,7 +360,7 @@ function stdoutFor(cmd: string, script: string): string {
       },
     ]);
   }
-  if (script.includes('NSScreenNumber')) return '[3]';
+  if (script.includes('NSScreenNumber')) return '[{"number":3,"scale_factor":1}]';
   if (script.includes('NSScreen')) return '[{"x":0,"y":0,"w":3840,"h":2160}]';
   if (script.includes('{found: false}')) {
     return JSON.stringify({ found: true, window: SAFARI_WINDOW });
@@ -513,22 +513,6 @@ describe('the exclusion at the execFile seam', () => {
       { action: 'move', success: true, window: { ...SAFARI_WINDOW, display_index: 0 } },
     ],
     [
-      'macos_manage_apps list',
-      () => apps({ action: 'list' }),
-      {
-        action: 'list',
-        apps: [
-          {
-            name: 'Safari',
-            bundle_id: 'com.apple.Safari',
-            pid: 3380,
-            visible: true,
-            frontmost: true,
-          },
-        ],
-      },
-    ],
-    [
       'macos_manage_apps frontmost',
       () => apps({ action: 'frontmost' }),
       {
@@ -562,7 +546,7 @@ describe('the exclusion at the execFile seam', () => {
 
   it('a windows list reads its display frames only after another call’s System Events script exits', async () => {
     const mac = machine('process-enumeration');
-    const appsList = apps({ action: 'list' });
+    const appsFrontmost = apps({ action: 'frontmost' });
     await flush();
     const windowsList = windows({ action: 'list' });
     await flush();
@@ -579,16 +563,16 @@ describe('the exclusion at the execFile seam', () => {
       action: 'list',
       windows: [{ ...SAFARI_WINDOW, display_index: 0 }],
     });
-    await expect(appsList).resolves.toMatchObject({ action: 'list' });
+    await expect(appsFrontmost).resolves.toMatchObject({ action: 'frontmost' });
     expect(mac.overlaps).toEqual([]);
   });
 
   it.each([
-    ['macos_manage_apps list', () => apps({ action: 'list' })],
-    ['macos_manage_windows list', () => windows({ action: 'list' })],
+    ['macos_manage_apps frontmost', () => apps({ action: 'frontmost' }), 'frontmost'],
+    ['macos_manage_windows list', () => windows({ action: 'list' }), 'list'],
   ] as const)(
     '%s started while an NSScreen read runs starts its System Events script only after the read exits',
-    async (_label, call) => {
+    async (_label, call, action) => {
       const mac = machine('nsscreen-read');
       const listing = displays();
       await flush();
@@ -599,7 +583,7 @@ describe('the exclusion at the execFile seam', () => {
       await mac.finish(listing);
       await mac.finish(enumerating);
       expect((await listing).displays).toEqual(INDEXED);
-      await expect(enumerating).resolves.toMatchObject({ action: 'list' });
+      await expect(enumerating).resolves.toMatchObject({ action });
       expect(mac.spawned('process-enumeration')).toHaveLength(1);
       expect(mac.overlaps).toEqual([]);
     },
@@ -625,7 +609,7 @@ describe('the exclusion at the execFile seam', () => {
 
   it('a windows list cancelled while its frames read waits rejects with the AbortError and never reads NSScreen', async () => {
     const mac = machine('process-enumeration');
-    const appsList = apps({ action: 'list' });
+    const appsFrontmost = apps({ action: 'frontmost' });
     await flush();
     const controller = new AbortController();
     const windowsList = windows({ action: 'list' }, controller.signal).catch((e: unknown) => e);
@@ -635,7 +619,7 @@ describe('the exclusion at the execFile seam', () => {
     await flush();
     controller.abort();
     expect(await windowsList).toBe(controller.signal.reason);
-    await mac.finish(appsList);
+    await mac.finish(appsFrontmost);
     expect(mac.spawned('nsscreen-read')).toEqual([]);
   });
 
@@ -672,7 +656,7 @@ describe('the exclusion at the execFile seam', () => {
     vi.advanceTimersByTime(1);
     const { structuredContent, content } = await result;
     const notice =
-      "index is omitted from every display: the NSScreen read failed (osascript timed out after 15000ms waiting for a System Events process enumeration to finish). Retry macos_manage_displays action=list to get each display's index.";
+      "index and scale_factor are omitted from every display: the NSScreen read failed (osascript timed out after 15000ms waiting for a System Events process enumeration to finish). Retry macos_manage_displays action=list to get each display's index and scale_factor.";
     expect(structuredContent).toMatchObject({ notice });
     expect((structuredContent as { displays: object[] }).displays[0]).not.toHaveProperty('index');
     const text = (content ?? []).map((b) => ('text' in b ? String(b.text) : '')).join('\n');

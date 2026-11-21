@@ -1,10 +1,11 @@
 /**
  * @fileoverview Unit tests for DisplayService — displayplacer output parsing, the
- * NSScreen join that gives each display its `index`, failed and incomplete
- * runs, and where the service finds displayplacer. `access` is faked so the
- * lookup never depends on what this host has installed, and `execFile` is faked
- * per program: displayplacer answers with a listing, osascript with the
- * NSScreenNumber order of `NSScreen.screens`.
+ * NSScreen join that gives each display its `index` and `scale_factor`, failed
+ * and incomplete runs, and where the service finds displayplacer. `access` is
+ * faked so the lookup never depends on what this host has installed, and
+ * `execFile` is faked per program: displayplacer answers with a listing,
+ * osascript with the NSScreenNumber and backingScaleFactor of each
+ * `NSScreen.screens` entry, in order.
  * @module tests/services/display-service.test
  */
 
@@ -143,11 +144,15 @@ function listing(blocks: string[][], command: string | null = REAL_ARRANGEMENT):
 
 const LIST_OUTPUT = listing([BLOCK_32, BLOCK_BUILTIN, BLOCK_27]);
 
-/** What `listDisplays` returns for `LIST_OUTPUT` and the NSScreen order [3,1,4]. */
+/**
+ * What `listDisplays` returns for `LIST_OUTPUT` and `THREE_SCREENS`: screen
+ * numbers 3, 1, 4 in NSScreen order, backed at 1x, 2x, and 2x.
+ */
 const THREE_DISPLAYS = {
   displays: [
     {
       index: 0,
+      scale_factor: 1,
       id: ID_32,
       type: '32 inch external screen',
       resolution: '3840x2160',
@@ -159,6 +164,7 @@ const THREE_DISPLAYS = {
     },
     {
       index: 1,
+      scale_factor: 2,
       id: ID_BUILTIN,
       type: 'MacBook built in screen',
       resolution: '1512x982',
@@ -170,6 +176,7 @@ const THREE_DISPLAYS = {
     },
     {
       index: 2,
+      scale_factor: 2,
       id: ID_27,
       type: '27 inch external screen',
       resolution: '1440x2560',
@@ -197,6 +204,13 @@ type Run =
 
 const ok = (stdout: string): Run => ({ ok: true, stdout });
 
+/** The NSScreen read printing each `[screen number, backingScaleFactor]` pair, in NSScreen order. */
+const screenRead = (...screens: [number, number][]): Run =>
+  ok(JSON.stringify(screens.map(([number, scale_factor]) => ({ number, scale_factor }))));
+
+/** The three-display Mac's NSScreen read: the 32-inch at 1x is main, then the built-in and the 27-inch at 2x. */
+const THREE_SCREENS = screenRead([3, 1], [1, 2], [4, 2]);
+
 /**
  * Fakes both programs the service runs: `list` answers every displayplacer run
  * (a listing or a layout), `screens` the osascript NSScreen read. A run whose
@@ -205,7 +219,7 @@ const ok = (stdout: string): Run => ({ ok: true, stdout });
  */
 function fakeRuns({
   list = ok(LIST_OUTPUT),
-  screens = ok('[3,1,4]'),
+  screens = THREE_SCREENS,
   cancelDuringRun,
 }: {
   list?: Run;
@@ -283,7 +297,7 @@ describe('DisplayService.listDisplays', () => {
   });
 
   it('parses a listing with no online display as no displays and a bare arrangement command', async () => {
-    fakeRuns({ list: ok(listing([], 'displayplacer')), screens: ok('[]') });
+    fakeRuns({ list: ok(listing([], 'displayplacer')), screens: screenRead() });
     expect(await svc.listDisplays(createMockContext())).toEqual({
       displays: [],
       current_config: 'displayplacer',
@@ -291,31 +305,31 @@ describe('DisplayService.listDisplays', () => {
   });
 });
 
-describe('DisplayService.listDisplays index', () => {
+describe('DisplayService.listDisplays index and scale_factor', () => {
   const svc = new DisplayService();
 
-  it('is each display’s position in NSScreen.screens, joined by Contextual screen id, not its list position', async () => {
-    fakeRuns({ screens: ok('[1,4,3]') });
+  it('are each display’s position in NSScreen.screens and its backingScaleFactor, joined by Contextual screen id, not its list position', async () => {
+    fakeRuns({ screens: screenRead([1, 2], [4, 2], [3, 1]) });
     const { displays } = await svc.listDisplays(createMockContext());
-    expect(displays.map((d) => [d.id, d.index])).toEqual([
-      [ID_32, 2],
-      [ID_BUILTIN, 0],
-      [ID_27, 1],
+    expect(displays.map((d) => [d.id, d.index, d.scale_factor])).toEqual([
+      [ID_32, 2, 1],
+      [ID_BUILTIN, 0, 2],
+      [ID_27, 1, 2],
     ]);
   });
 
-  it('is null for a display with no NSScreen entry, such as a disabled one', async () => {
+  it('are null for a display with no NSScreen entry, such as a disabled one', async () => {
     const disabled = BLOCK_27.map((line) => (line === 'Enabled: true' ? 'Enabled: false' : line));
     const command = `displayplacer "id:${ID_32} res:3840x2160 hz:144 color_depth:8 enabled:true scaling:off origin:(0,0) degree:0" "id:${ID_BUILTIN} res:1512x982 hz:120 color_depth:8 enabled:true scaling:on origin:(3840,928) degree:0" "id:${ID_27} enabled:false"`;
     fakeRuns({
       list: ok(listing([BLOCK_32, BLOCK_BUILTIN, disabled], command)),
-      screens: ok('[3,1]'),
+      screens: screenRead([3, 1], [1, 2]),
     });
     const { displays, current_config } = await svc.listDisplays(createMockContext());
-    expect(displays.map((d) => [d.id, d.index, d.enabled])).toEqual([
-      [ID_32, 0, true],
-      [ID_BUILTIN, 1, true],
-      [ID_27, null, false],
+    expect(displays.map((d) => [d.id, d.index, d.scale_factor, d.enabled])).toEqual([
+      [ID_32, 0, 1, true],
+      [ID_BUILTIN, 1, 2, true],
+      [ID_27, null, null, false],
     ]);
     expect(current_config).toBe(command);
   });
@@ -326,10 +340,10 @@ describe('DisplayService.listDisplays index', () => {
     );
     fakeRuns({
       list: ok(listing([BLOCK_32, BLOCK_BUILTIN, wide])),
-      screens: ok('[3,1,4294967295]'),
+      screens: screenRead([3, 1], [1, 2], [4294967295, 2]),
     });
     const { displays } = await svc.listDisplays(createMockContext());
-    expect(displays[2]?.index).toBe(2);
+    expect(displays[2]).toMatchObject({ index: 2, scale_factor: 2 });
   });
 
   it('reads NSScreen with a JXA AppKit script in its own osascript process, bounded by a timeout', async () => {
@@ -343,35 +357,48 @@ describe('DisplayService.listDisplays index', () => {
     expect(script).toContain("ObjC.import('AppKit')");
     expect(script).toContain('$.NSScreen.screens');
     expect(script).toContain("objectForKey('NSScreenNumber')");
+    // An ObjC number would serialize as {}, so the factor is a JS number before it reaches JSON.
+    expect(script).toMatch(/Number\([^)]*\.backingScaleFactor\)/);
     expect(script).not.toContain('System Events');
     // displayplacer's own 15 s bound, so the read never makes the listing outlast it.
     expect(opts?.timeout).toBe(15_000);
   });
 
+  const NOT_A_SCREEN_LIST = 'its output was not a JSON list of screen numbers and scale factors';
   for (const [label, screens, detail] of [
     [
       'the osascript run fails',
       { ok: false, code: 1, stderr: 'execution error: Error: boom (-2700)' },
       'osascript failed: execution error: Error: boom (-2700)',
     ],
+    ['the read prints no JSON list', ok('not json'), NOT_A_SCREEN_LIST],
+    ['the read prints bare screen numbers', ok('[3,1,4]'), NOT_A_SCREEN_LIST],
     [
-      'the read prints no JSON list of screen numbers',
-      ok('not json'),
-      'its output was not a JSON list of screen numbers',
+      'the read prints a screen number that is not an integer',
+      ok('[{"number":3,"scale_factor":1},{"number":null,"scale_factor":2}]'),
+      NOT_A_SCREEN_LIST,
     ],
     [
-      'the read prints a list holding a non-integer',
-      ok('[3,null,4]'),
-      'its output was not a JSON list of screen numbers',
+      'the read prints a screen with no scale factor',
+      ok('[{"number":3,"scale_factor":1},{"number":1}]'),
+      NOT_A_SCREEN_LIST,
+    ],
+    [
+      'the read prints a scale factor of 0',
+      ok('[{"number":3,"scale_factor":0}]'),
+      NOT_A_SCREEN_LIST,
     ],
   ] as const) {
-    it(`omits index from every display and says why when ${label}`, async () => {
+    it(`omits index and scale_factor from every display and says why when ${label}`, async () => {
       fakeRuns({ screens: screens as Run });
       const result = await svc.listDisplays(createMockContext());
       expect(result.displays).toHaveLength(3);
-      for (const display of result.displays) expect(display).not.toHaveProperty('index');
+      for (const display of result.displays) {
+        expect(display).not.toHaveProperty('index');
+        expect(display).not.toHaveProperty('scale_factor');
+      }
       expect(result.notice).toBe(
-        `index is omitted from every display: the NSScreen read failed (${detail}). Retry macos_manage_displays action=list to get each display's index.`,
+        `index and scale_factor are omitted from every display: the NSScreen read failed (${detail}). Retry macos_manage_displays action=list to get each display's index and scale_factor.`,
       );
       expect(result.current_config).toBe(REAL_ARRANGEMENT);
     });

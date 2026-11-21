@@ -324,7 +324,7 @@ describe('error contract — macos_manage_displays', () => {
     vi.mocked(access).mockResolvedValueOnce(undefined);
     fakeExec((cmd) =>
       cmd === SYSTEM_BINARIES.osascript
-        ? '[1]'
+        ? '[{"number":1,"scale_factor":2}]'
         : 'Execute the command below to set your screens to the current arrangement.',
     );
     const result = await runToolContract(macosManageDisplays, { action: 'list' });
@@ -560,12 +560,35 @@ describe('error contract — service-raised accessibility_required reaches both 
 });
 
 describe('error contract — macos_take_screenshot', () => {
-  /** The real service writes only inside /tmp here. */
-  const DIR = mkdtempSync('/tmp/macos-mcp-contract-');
+  /**
+   * The real service writes only inside /tmp here. Made in beforeAll, never at
+   * collection, so a run that skips this block leaves nothing in /tmp.
+   */
+  let DIR = '';
+
+  beforeAll(() => {
+    DIR = mkdtempSync('/tmp/macos-mcp-contract-');
+  });
+
+  /**
+   * MACOS_SCREENSHOT_DIR is DIR, so no call here ever resolves the real
+   * ~/Desktop, the default when it is unset.
+   */
+  beforeEach(() => {
+    vi.mocked(getServerConfig).mockReturnValue({ screenshotDir: DIR, displayLayouts: '{}' });
+  });
 
   afterAll(() => {
     rmSync(DIR, { recursive: true, force: true });
   });
+
+  /** The Screen Recording check answers `granted` through the real osascript service; every other run prints nothing. */
+  const screenRecording =
+    (granted: boolean) =>
+    (cmd: string, script: string): string =>
+      cmd === SYSTEM_BINARIES.osascript && script.includes('CGPreflightScreenCaptureAccess')
+        ? JSON.stringify({ granted })
+        : '';
 
   it('an existing file without overwrite forwards path_exists recovery, before any capture', async () => {
     const path = join(DIR, 'exists.png');
@@ -608,7 +631,7 @@ describe('error contract — macos_take_screenshot', () => {
         writeFileSync(`${path}.next`, 'theirs');
         renameSync(`${path}.next`, path);
       }
-      cb(null, { stdout: '', stderr: '' });
+      cb(null, { stdout: screenRecording(true)(cmd, args.at(-1) ?? ''), stderr: '' });
       return { pid: 1 };
     });
     const result = await runToolContract(macosTakeScreenshot, {
@@ -642,38 +665,70 @@ describe('error contract — macos_take_screenshot', () => {
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
+  it('a directory macOS refuses with EPERM forwards path_not_writable with the Files & Folders hint, before any capture', async () => {
+    // A user-immutable directory: creating the capture's private directory in it fails EPERM.
+    const { execFileSync } =
+      await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const locked = mkdtempSync(join(DIR, 'locked-'));
+    execFileSync('/usr/bin/chflags', ['uchg', locked]);
+    try {
+      const result = await runToolContract(macosTakeScreenshot, {
+        target: 'screen',
+        path: join(locked, 'x.png'),
+      });
+      expectFailure(result, {
+        code: -32007,
+        reason: 'path_not_writable',
+        hint: 'Allow your terminal or MCP host app to access this folder in System Settings > Privacy & Security > Files & Folders, or pass a path in another directory.',
+      });
+    } finally {
+      execFileSync('/usr/bin/chflags', ['nouchg', locked]);
+    }
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  /** Each case's path and message in `dir`, which exists only once beforeAll has run. */
   for (const { label, path, message, hint } of [
     {
       label: 'a name not ending in .png',
-      path: join(DIR, 'notes.txt'),
-      message: `path must end in .png: "${join(DIR, 'notes.txt')}".`,
+      path: (dir: string) => join(dir, 'notes.txt'),
+      message: (dir: string) => `path must end in .png: "${join(dir, 'notes.txt')}".`,
       hint: 'Name a .png file in path, or omit path for a timestamped file in MACOS_SCREENSHOT_DIR.',
     },
     {
       label: 'a path holding U+0000',
-      path: `${DIR}/a\0b.png`,
-      message: 'path contains U+0000, which no file path can hold.',
+      path: (dir: string) => `${dir}/a\0b.png`,
+      message: () => 'path contains U+0000, which no file path can hold.',
       hint: 'Remove U+0000 from path and call again.',
     },
     {
       label: 'a file name longer than the file system allows',
-      path: join(DIR, `${'x'.repeat(300)}.png`),
-      message: `path is longer than the file system allows: "${join(DIR, `${'x'.repeat(300)}.png`)}".`,
+      path: (dir: string) => join(dir, `${'x'.repeat(300)}.png`),
+      message: (dir: string) =>
+        `path is longer than the file system allows: "${join(dir, `${'x'.repeat(300)}.png`)}".`,
       hint: 'Use a shorter file name in path (at most 255 bytes, and 1024 for the whole path) and call again.',
     },
   ]) {
     it(`${label} is -32602 invalid_arguments on both surfaces, before any capture`, async () => {
-      const result = await runToolContract(macosTakeScreenshot, { target: 'screen', path });
-      expectFailure(result, { code: -32602, reason: 'invalid_arguments', hint, message });
+      const result = await runToolContract(macosTakeScreenshot, {
+        target: 'screen',
+        path: path(DIR),
+      });
+      expectFailure(result, {
+        code: -32602,
+        reason: 'invalid_arguments',
+        hint,
+        message: message(DIR),
+      });
       expect(execFileMock).not.toHaveBeenCalled();
     });
   }
 
   it('target=display on an index screencapture does not have forwards display_not_found recovery, and writes nothing', async () => {
-    fakeExec((cmd) =>
+    fakeExec((cmd, script) =>
       cmd === SYSTEM_BINARIES.screencapture
         ? { stderr: 'Invalid display specified. Must be a number from 1-3' }
-        : '',
+        : screenRecording(true)(cmd, script),
     );
     const path = join(DIR, 'display.png');
     const result = await runToolContract(macosTakeScreenshot, {
@@ -685,9 +740,34 @@ describe('error contract — macos_take_screenshot', () => {
       ...declared(macosTakeScreenshot, 'display_not_found', -32001),
       message: 'Display index 5 is not available.',
     });
-    expect(execFileMock.mock.calls.map((c) => c[1].slice(0, 2))).toEqual([['-x', '-D6']]);
+    expect(execFileMock.mock.calls.map((c) => [c[0], c[1].slice(0, 2)])).toEqual([
+      [SYSTEM_BINARIES.osascript, ['-l', 'JavaScript']],
+      [SYSTEM_BINARIES.screencapture, ['-x', '-D6']],
+    ]);
     expect(() => readFileSync(path)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
   });
+
+  for (const args of [
+    { target: 'screen' },
+    { target: 'display', display_index: 1 },
+    { target: 'region', region: { x: 0, y: 0, width: 10, height: 10 } },
+  ] as const) {
+    it(`target=${args.target} with Screen Recording denied forwards screen_recording_required recovery, before any capture`, async () => {
+      fakeExec(screenRecording(false));
+      const path = join(DIR, `${args.target}-denied.png`);
+      const result = await runToolContract(macosTakeScreenshot, { ...args, path });
+      expectFailure(result, {
+        ...declared(macosTakeScreenshot, 'screen_recording_required', -32005),
+        message:
+          'Screen Recording permission is required for every screenshot: without it, macOS leaves app windows and their content out of the capture.',
+      });
+      // The check alone ran: no screencapture, and nothing at path.
+      expect(osascriptScripts()).toHaveLength(1);
+      expect(osascriptScripts()[0]).toContain('CGPreflightScreenCaptureAccess');
+      expect(execFileMock).toHaveBeenCalledTimes(1);
+      expect(() => readFileSync(path)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+    });
+  }
 
   /**
    * The app_name resolver's answer (`running` apps, as NSWorkspace lists them)
@@ -702,7 +782,10 @@ describe('error contract — macos_take_screenshot', () => {
               localizedName: name,
               bundleName: `${name}.app`,
               executableName: name,
+              bundleId: null,
               activationPolicy: 0,
+              hidden: false,
+              active: false,
             })),
           )
         : '{"granted":false}',
@@ -843,6 +926,47 @@ describe('error contract — macos_manage_focus', () => {
     });
     expectNoCommandLine(result);
     expect(JSON.stringify(result)).not.toContain('shortcuts run');
+  });
+
+  it('list forwards full_disk_access_required recovery when macOS refuses the read (EPERM), naming no home directory', async () => {
+    // HOME points at a scratch directory, so the read never reaches this Mac's Focus database.
+    const home = mkdtempSync(join(tmpdir(), 'macos-focus-home-'));
+    vi.stubEnv('HOME', home);
+    const modesPath = join(home, 'Library/DoNotDisturb/DB/ModeConfigurations.json');
+    const fs = await import('node:fs/promises');
+    const read = vi.spyOn(fs, 'readFile').mockRejectedValue(
+      Object.assign(new Error(`EPERM: operation not permitted, open '${modesPath}'`), {
+        code: 'EPERM',
+        errno: -1,
+        syscall: 'open',
+        path: modesPath,
+      }),
+    );
+    try {
+      const result = await runToolContract(macosManageFocus, { action: 'list' });
+      const hint = declaredRecovery(macosManageFocus, 'full_disk_access_required');
+      expect(result.isError).toBe(true);
+      expect(errorOf(result)).toMatchObject({
+        code: -32005,
+        message:
+          'macOS refused to read the Focus configuration file (~/Library/DoNotDisturb/DB/ModeConfigurations.json) because the server process lacks Full Disk Access.',
+        data: { reason: 'full_disk_access_required', recovery: { hint } },
+      });
+      // content[] escapes the tilde, which a GFM parse would otherwise read as strikethrough.
+      const lines = contentText(result).split('\n');
+      expect(lines[0]).toBe(
+        'Error: macOS refused to read the Focus configuration file (\\~/Library/DoNotDisturb/DB/ModeConfigurations.json) because the server process lacks Full Disk Access.',
+      );
+      expect(lines).toContain(`Recovery: ${hint}`);
+      expect(lines.at(-1)).toMatch(/^\(reason full_disk_access_required( · request [^)]+)?\)$/);
+      expect(read.mock.calls.map((c) => c[0])).toEqual([modesPath]);
+      expect(JSON.stringify(result)).not.toContain(home);
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -986,6 +1110,38 @@ describe('error contract — macos_control_audio', () => {
       reason: 'device_not_found',
       hint: declaredRecovery(macosControlAudio, 'device_not_found'),
       message: 'No output device matching "ZzNoSuchDevice" found.',
+    });
+    expect(execFileMock.mock.calls.map((c) => c[1])).toEqual([
+      ['-a', '-f', 'json'],
+      ['-c', '-t', 'output'],
+      ['-c', '-t', 'input'],
+    ]);
+  });
+
+  it('switch_input naming part of two listed input names forwards device_ambiguous, before any switch', async () => {
+    vi.mocked(access).mockResolvedValue(undefined);
+    const inputs = [
+      'Alex’s iPhone 15 Pro Microphone',
+      'HD Pro Webcam C920',
+      'MacBook Pro Microphone',
+    ];
+    fakeExec((_cmd, script) =>
+      script === 'json'
+        ? inputs
+            .map((name, i) => JSON.stringify({ name, type: 'input', id: `${i}`, uid: `uid-${i}` }))
+            .join('\n')
+        : script === 'output' || script === 'input'
+          ? 'HD Pro Webcam C920'
+          : '',
+    );
+    const result = await runToolContract(macosControlAudio, {
+      action: 'switch_input',
+      device: 'Pro Microphone',
+    });
+    expectFailure(result, {
+      ...declared(macosControlAudio, 'device_ambiguous', -32007),
+      message:
+        '"Pro Microphone" matches 2 input devices: "Alex’s iPhone 15 Pro Microphone", "MacBook Pro Microphone". The default input device is unchanged.',
     });
     expect(execFileMock.mock.calls.map((c) => c[1])).toEqual([
       ['-a', '-f', 'json'],

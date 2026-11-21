@@ -47,6 +47,7 @@ const execFile = promisify(execFileCallback);
 export type ScreenshotTarget =
   | { target: 'screen' }
   | { target: 'display'; displayIndex?: number }
+  /** `region`: points in global display coordinates, as `screencapture -R` takes them. */
   | { target: 'region'; region: { x: number; y: number; width: number; height: number } }
   /** `pids`: the running apps `appName` resolved to (`resolveAppPids`); `appName` names the app in errors. */
   | { target: 'window'; appName: string; pids: readonly number[] };
@@ -66,7 +67,7 @@ export type ScreenshotOptions = ScreenshotTarget & {
 
 export interface ScreenshotResult {
   height: number;
-  /** After a window capture whose Screen Recording check could not tell: why. */
+  /** After a capture whose Screen Recording check could not tell: why. */
   notice?: string;
   path: string;
   preview?: string;
@@ -173,6 +174,24 @@ function pathNotWritable(message: string, cause?: unknown): McpError {
   return validationError(message, { reason: 'path_not_writable' }, { cause });
 }
 
+/**
+ * EPERM on the capture's directory, most often macOS guarding a folder
+ * (Desktop, Documents, Downloads, a removable volume) the host app has no
+ * Files & Folders grant for.
+ */
+function accessDenied(dir: string, cause: unknown): McpError {
+  return validationError(
+    `macOS denied access to ${quotedText(dir)} (EPERM).`,
+    {
+      reason: 'path_not_writable',
+      recovery: {
+        hint: 'Allow your terminal or MCP host app to access this folder in System Settings > Privacy & Security > Files & Folders, or pass a path in another directory.',
+      },
+    },
+    { cause },
+  );
+}
+
 function pathExists(message: string, hint?: string): McpError {
   return conflict(message, { reason: 'path_exists', ...(hint && { recovery: { hint } }) });
 }
@@ -203,6 +222,7 @@ async function realDirectory(dir: string): Promise<string> {
     real = await realpath(dir);
     entry = await stat(real);
   } catch (err: unknown) {
+    if (errnoCode(err) === 'EPERM') throw accessDenied(dir, err);
     throw pathNotWritable(
       `The directory ${quotedText(dir)} does not exist or cannot be read.`,
       err,
@@ -212,26 +232,45 @@ async function realDirectory(dir: string): Promise<string> {
   return real;
 }
 
-/** The directories a capture may go in, as real paths; one that does not exist is left out. */
-async function allowedRoots(screenshotDir: string): Promise<string[]> {
-  const roots = await Promise.all(
-    [screenshotDir, '/tmp', homedir()].map((dir) => realpath(dir).catch(() => undefined)),
-  );
-  return roots.filter((root) => root !== undefined);
+/** The real path of `dir`, or undefined when it cannot be resolved. */
+function realPathOrNone(dir: string): Promise<string | undefined> {
+  return realpath(dir).catch(() => undefined);
+}
+
+/**
+ * Whether `dir`, an explicit path's directory as its real path, may hold a
+ * capture: inside /tmp, the home directory, or MACOS_SCREENSHOT_DIR, each
+ * resolved the same way. MACOS_SCREENSHOT_DIR is resolved only for a directory
+ * outside the first two, and, while it is unset, only when `written` (that
+ * directory as the caller wrote it, `~` expanded) lies inside ~/Desktop. macOS
+ * guards ~/Desktop, and Bun's realpath opens the directory it resolves, so
+ * resolving it for any other path could raise the Desktop privacy prompt and
+ * block the call; a path written inside it has just been resolved through it.
+ */
+async function isAllowedDirectory(
+  dir: string,
+  written: string,
+  configured: string,
+): Promise<boolean> {
+  const roots = await Promise.all(['/tmp', homedir()].map(realPathOrNone));
+  if (roots.some((root) => root !== undefined && isWithin(dir, root))) return true;
+  const screenshotDir = resolveScreenshotDir(configured);
+  if (!configured.trim() && !isWithin(resolve(written), screenshotDir)) return false;
+  const real = await realPathOrNone(screenshotDir);
+  return real !== undefined && isWithin(dir, real);
 }
 
 /**
  * Where a capture goes, settled before anything is captured. A blank `path`
  * means the default path. Any other path must end in .png, and its directory,
- * with `~` expanded and symlinks resolved, must exist inside MACOS_SCREENSHOT_DIR,
- * /tmp, or the home directory, each resolved the same way.
+ * with `~` expanded and symlinks resolved, must exist inside /tmp, the home
+ * directory, or MACOS_SCREENSHOT_DIR (`isAllowedDirectory`).
  */
 async function resolveDestination(opts: ScreenshotOptions): Promise<Destination> {
-  const screenshotDir = resolveScreenshotDir(opts.screenshotDir);
   const path = opts.path ?? '';
   if (!path.trim()) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dir = await realDirectory(screenshotDir);
+    const dir = await realDirectory(resolveScreenshotDir(opts.screenshotDir));
     return { kind: 'default', dir, name: `screenshot-${stamp}.png` };
   }
   if (path.includes('\0')) {
@@ -252,15 +291,15 @@ async function resolveDestination(opts: ScreenshotOptions): Promise<Destination>
       `Path ${quotedText(path)} must be absolute, or start with ~/ for the home directory.`,
     );
   }
-  const dir = await realDirectory(dirname(expanded));
-  const roots = await allowedRoots(screenshotDir);
-  if (!roots.some((root) => isWithin(dir, root))) {
+  const written = dirname(expanded);
+  const dir = await realDirectory(written);
+  if (!(await isAllowedDirectory(dir, written, opts.screenshotDir))) {
     throw pathNotWritable(
       `Path ${quotedText(path)} is outside the allowed screenshot directories.`,
     );
   }
   const name = basename(expanded);
-  const file = await checkTarget(join(dir, name), path, opts.overwrite === true);
+  const file = await checkTarget(dir, name, path, opts.overwrite === true);
   return file ? { kind: 'replace', dir, name, file } : { kind: 'new', dir, name };
 }
 
@@ -275,16 +314,19 @@ function describeEntry(entry: BigIntStats): string {
  * overwrite, the regular file overwrite may replace. Any other entry is refused.
  */
 async function checkTarget(
-  target: string,
+  dir: string,
+  name: string,
   path: string,
   overwrite: boolean,
 ): Promise<CheckedFile | undefined> {
+  const target = join(dir, name);
   let entry: BigIntStats;
   try {
     entry = await lstat(target, { bigint: true });
   } catch (err: unknown) {
     const code = errnoCode(err);
     if (code === 'ENOENT') return;
+    if (code === 'EPERM') throw accessDenied(dir, err);
     if (code === 'ENAMETOOLONG') {
       throw invalidPath(
         `path is longer than the file system allows: ${quotedText(path)}.`,
@@ -311,6 +353,7 @@ async function makeWorkDir(dir: string): Promise<string> {
   try {
     return await mkdtemp(join(dir, '.macos-mcp-capture-'));
   } catch (err: unknown) {
+    if (errnoCode(err) === 'EPERM') throw accessDenied(dir, err);
     throw pathNotWritable(
       `Cannot write in ${quotedText(dir)} (${errnoCode(err) ?? 'unknown error'}).`,
       err,
@@ -517,10 +560,16 @@ async function createPreview(
   return { data: data.toString('base64'), ...previewSize };
 }
 
+/** The tool's declared screen_recording_required recovery, word for word. */
+const SCREEN_RECORDING_HINT =
+  'Grant Screen Recording in System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS) for your terminal or MCP host app.';
+
 /**
- * Screen Recording before a window capture, from the prompt-free check. A
- * denial fails the call. A check that cannot tell lets the capture run, since
- * it may well succeed, and returns a notice saying why.
+ * Screen Recording before any capture, from the prompt-free check: without it,
+ * macOS leaves other apps' windows out of a screen, display, or region capture
+ * and the window's content out of a window capture, and screencapture still
+ * succeeds. A denial fails the call. A check that cannot tell lets the capture
+ * run, since it may well succeed, and returns a notice saying why.
  */
 async function screenRecordingGate(ctx: Context): Promise<string | undefined> {
   const check = await checkScreenRecording(ctx);
@@ -528,17 +577,12 @@ async function screenRecordingGate(ctx: Context): Promise<string | undefined> {
     case 'granted':
       return;
     case 'unknown':
-      return `Screen Recording could not be confirmed before the capture (${check.reason}). If the capture lacks the window's content, grant Screen Recording in System Settings > Privacy & Security > Screen Recording for your terminal or MCP host app.`;
+      return `Screen Recording could not be confirmed before the capture (${check.reason}). If app windows or their content are missing from the capture, grant Screen Recording in System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS) for your terminal or MCP host app.`;
     case 'denied':
       throw new McpError(
         JsonRpcErrorCode.Forbidden,
-        'Screen Recording permission is required for window capture.',
-        {
-          reason: 'screen_recording_required',
-          recovery: {
-            hint: 'Grant Screen Recording in System Settings > Privacy & Security > Screen Recording for your terminal or MCP host app.',
-          },
-        },
+        'Screen Recording permission is required for every screenshot: without it, macOS leaves app windows and their content out of the capture.',
+        { reason: 'screen_recording_required', recovery: { hint: SCREEN_RECORDING_HINT } },
       );
   }
 }
@@ -579,8 +623,9 @@ export class ScreencaptureService {
   }
 
   /**
-   * Runs screencapture for the target, writing `outputPath`. Returns a notice
-   * when a window capture ran without Screen Recording confirmed.
+   * Checks Screen Recording, then runs screencapture for the target, writing
+   * `outputPath`. Returns a notice when the capture ran without Screen
+   * Recording confirmed.
    */
   private async runCapture(
     opts: ScreenshotOptions,
@@ -588,11 +633,11 @@ export class ScreencaptureService {
     deadline: Deadline,
     ctx: Context,
   ): Promise<string | undefined> {
-    let notice: string | undefined;
+    const notice = await screenRecordingGate(ctx);
 
     switch (opts.target) {
       case 'screen': {
-        // The main display only, the one with the menu bar — no permissions needed
+        // The main display only, the one with the menu bar.
         await capture(['-x', outputPath], deadline);
         break;
       }
@@ -631,9 +676,6 @@ export class ScreencaptureService {
       }
 
       case 'window': {
-        // Window capture requires Screen Recording permission
-        notice = await screenRecordingGate(ctx);
-
         const windowId = await findWindowId(opts.pids, opts.appName, deadline);
         await capture(['-x', '-l', windowId, outputPath], deadline);
         break;

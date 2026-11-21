@@ -24,21 +24,30 @@ const { RUNNING_APPS, runJxaMock } = vi.hoisted(() => {
       localizedName: 'Safari',
       bundleName: 'Safari.app',
       executableName: 'Safari',
+      bundleId: 'com.apple.Safari',
       activationPolicy: 0,
+      hidden: false,
+      active: false,
     },
     {
       pid: 3284,
       localizedName: 'Firefox',
       bundleName: 'Firefox.app',
       executableName: 'firefox',
+      bundleId: 'org.mozilla.firefox',
       activationPolicy: 0,
+      hidden: false,
+      active: false,
     },
     {
       pid: 39578,
       localizedName: 'Code',
       bundleName: 'Visual Studio Code.app',
       executableName: 'Code',
+      bundleId: 'com.microsoft.VSCode',
       activationPolicy: 0,
+      hidden: false,
+      active: false,
     },
   ];
   return {
@@ -184,12 +193,87 @@ describe('macosTakeScreenshot', () => {
   it('the description says target=screen is the main display and display_index is the displays list index', () => {
     const sentences = macosTakeScreenshot.description.split(/(?<=\.)\s+/);
     expect(sentences).toContain(
-      'Capture a screenshot of the main display (the one with the menu bar), one connected display chosen by display_index, a named app window, or a pixel region.',
+      'Capture a screenshot of the main display (the one with the menu bar), one connected display chosen by display_index, a named app window, or a region given in points in global display coordinates.',
     );
     expect(sentences).toContain(
       'display_index is the 0-based index macos_manage_displays action=list reports for each display.',
     );
     expect(macosTakeScreenshot.description).not.toContain('full screen');
+  });
+
+  it('region is in points; width and height are pixels, points × the captured display’s scale_factor, never one factor across displays', () => {
+    const input = z.toJSONSchema(macosTakeScreenshot.input, { io: 'input' }) as {
+      properties: Record<
+        string,
+        { description?: string; properties?: Record<string, { description?: string }> }
+      >;
+    };
+    const output = z.toJSONSchema(macosTakeScreenshot.output, { io: 'output' }) as {
+      properties: Record<string, { description?: string }>;
+    };
+    const sentences = macosTakeScreenshot.description.split(/(?<=\.)\s+/);
+    expect(sentences).toContain(
+      "The PNG's width and height are pixels: the captured area in points × the captured display's scale_factor from macos_manage_displays action=list (display 0 for target=screen), and a window capture also includes the window's shadow.",
+    );
+    expect(sentences).toContain(
+      'A region that spans displays with different scale_factor values has no single factor.',
+    );
+    const region = input.properties.region;
+    expect(region?.description).toBe(
+      'Rectangle to capture for target=region, in points in global display coordinates: the space macos_manage_displays action=list gives each display origin and resolution in, and macos_manage_windows gives window bounds in.',
+    );
+    expect(region?.properties?.x?.description).toBe(
+      'Left edge in points; 0 is the left edge of the main display, and a display to its left has negative x.',
+    );
+    expect(region?.properties?.y?.description).toBe(
+      'Top edge in points; 0 is the top edge of the main display, and a display above it has negative y.',
+    );
+    expect(region?.properties?.width?.description).toBe(
+      'Region width in points. Must be greater than 0.',
+    );
+    expect(region?.properties?.height?.description).toBe(
+      'Region height in points. Must be greater than 0.',
+    );
+    expect(input.properties.target?.description).toContain(
+      'region — a rectangle in points, in global display coordinates.',
+    );
+    expect(output.properties.width?.description).toBe(
+      "Full-resolution image width in pixels, read from the PNG header: the captured width in points × the captured display's scale_factor (display 0 for target=screen). A window capture also includes the window's shadow, and a region that spans displays with different scale_factor values has no single factor.",
+    );
+    expect(output.properties.height?.description).toBe(
+      "Full-resolution image height in pixels, read from the PNG header: the captured height in points × the captured display's scale_factor, as for width.",
+    );
+    // No surface calls the region, or any input, pixels.
+    expect(JSON.stringify(input)).not.toMatch(/pixel (region|rectangle)|in pixels/i);
+    expect(macosTakeScreenshot.description).not.toMatch(/pixel region/i);
+  });
+
+  it('every surface that names Screen Recording says every target needs it', () => {
+    const schema = z.toJSONSchema(macosTakeScreenshot.input, { io: 'input' }) as {
+      properties: Record<string, { description?: string }>;
+    };
+    const contract = macosTakeScreenshot.errors?.find(
+      (e) => e.reason === 'screen_recording_required',
+    );
+    expect(macosTakeScreenshot.description).toContain(
+      'Every target requires Screen Recording permission',
+    );
+    expect(schema.properties.target?.description).toContain(
+      'Every target requires Screen Recording.',
+    );
+    expect(contract?.when).toContain('any target');
+    for (const text of [
+      macosTakeScreenshot.description,
+      schema.properties.target?.description ?? '',
+      contract?.when ?? '',
+    ]) {
+      expect(text).not.toMatch(
+        /window capture requires|all other targets do not|target=window while/i,
+      );
+    }
+    expect(contract?.recovery).toBe(
+      'Grant Screen Recording in System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS) for your terminal or MCP host app.',
+    );
   });
 
   it('advertises overwrite as an optional boolean beside path', () => {
@@ -257,23 +341,28 @@ describe('macosTakeScreenshot through its contract', () => {
     ]);
   });
 
-  it('a notice from the service reaches structuredContent.notice and the content[] trailer', async () => {
-    const notice =
-      "Screen Recording could not be confirmed before the capture (the check could not run: osascript timed out after 5000ms). If the capture lacks the window's content, grant Screen Recording in System Settings > Privacy & Security > Screen Recording for your terminal or MCP host app.";
-    vi.mocked(getScreencaptureService).mockReturnValue(
-      makeScreencaptureService({ ...mockResult, notice } as typeof mockResult) as never,
-    );
-    // Safari is in the resolver's running-app answer, so the call reaches the capture.
-    const result = await runToolContract(macosTakeScreenshot, {
-      target: 'window',
-      app_name: 'Safari',
-    });
-    expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toEqual({ ...mockResult, notice });
-    const text = textOf(result.content as Array<{ type: string; text?: string }>);
-    expect(text.split('\n')).toContain(`> \`${notice}\``);
-    expect(text.split('\n')).toContain('**path:** `/tmp/screenshot-2026-01-01.png`');
-  });
+  // Safari is in the resolver's running-app answer, so a window call reaches the capture.
+  it.each([
+    { target: 'screen' },
+    { target: 'display', display_index: 1 },
+    { target: 'region', region: { x: 0, y: 0, width: 10, height: 10 } },
+    { target: 'window', app_name: 'Safari' },
+  ] as const)(
+    'target=$target: a notice from the service reaches structuredContent.notice and the content[] trailer',
+    async (args) => {
+      const notice =
+        'Screen Recording could not be confirmed before the capture (the check could not run: osascript timed out after 5000ms). If app windows or their content are missing from the capture, grant Screen Recording in System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS) for your terminal or MCP host app.';
+      vi.mocked(getScreencaptureService).mockReturnValue(
+        makeScreencaptureService({ ...mockResult, notice } as typeof mockResult) as never,
+      );
+      const result = await runToolContract(macosTakeScreenshot, args);
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({ ...mockResult, notice });
+      const text = textOf(result.content as Array<{ type: string; text?: string }>);
+      expect(text.split('\n')).toContain(`> \`${notice}\``);
+      expect(text.split('\n')).toContain('**path:** `/tmp/screenshot-2026-01-01.png`');
+    },
+  );
 
   /** Values whose markdown would take effect, or whose line ending would change, if rendered raw. */
   const MARKDOWN_VALUES = [

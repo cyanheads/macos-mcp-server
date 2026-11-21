@@ -18,14 +18,14 @@ import { quotedText } from '@/utils/quoted-text.js';
 export const macosTakeScreenshot = tool('macos_take_screenshot', {
   title: 'Take macOS Screenshot',
   description:
-    'Capture a screenshot of the main display (the one with the menu bar), one connected display chosen by display_index, a named app window, or a pixel region. display_index is the 0-based index macos_manage_displays action=list reports for each display. Always saves a full-resolution PNG to disk, by default as a new timestamped file in MACOS_SCREENSHOT_DIR (~/Desktop when unset), and never replaces an existing file unless overwrite is true. With include_data, also returns a JPEG preview (longer side at most 1024 px) as an image content block for visual analysis and as base64 in preview. Window capture requires Screen Recording permission; all other targets do not. When the permission check cannot tell whether Screen Recording is granted, the window capture still runs and notice says why.',
+    "Capture a screenshot of the main display (the one with the menu bar), one connected display chosen by display_index, a named app window, or a region given in points in global display coordinates. display_index is the 0-based index macos_manage_displays action=list reports for each display. Always saves a full-resolution PNG to disk, by default as a new timestamped file in MACOS_SCREENSHOT_DIR (~/Desktop when unset), and never replaces an existing file unless overwrite is true. The PNG's width and height are pixels: the captured area in points × the captured display's scale_factor from macos_manage_displays action=list (display 0 for target=screen), and a window capture also includes the window's shadow. A region that spans displays with different scale_factor values has no single factor. With include_data, also returns a JPEG preview (longer side at most 1024 px) as an image content block for visual analysis and as base64 in preview. Every target requires Screen Recording permission, since without it macOS leaves app windows and their content out of the capture: a denied check fails with screen_recording_required before anything is captured, and when the check cannot tell whether the permission is granted, the capture still runs and notice says why.",
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   input: withActionRequirements(
     z.object({
       target: z
         .enum(['screen', 'window', 'display', 'region'])
         .describe(
-          'screen — the main display only, the one with the menu bar (use display for the others); window — a named app window (requires Screen Recording); display — one connected display, chosen by display_index; region — a pixel rectangle.',
+          'screen — the main display only, the one with the menu bar (use display for the others); window — a named app window; display — one connected display, chosen by display_index; region — a rectangle in points, in global display coordinates. Every target requires Screen Recording.',
         ),
       app_name: z
         .string()
@@ -45,21 +45,29 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
         .object({
           x: z
             .number()
-            .describe('Left edge x-coordinate. Negative for displays left of the primary.'),
-          y: z.number().describe('Top edge y-coordinate. Negative for displays above the primary.'),
-          width: z.number().positive().describe('Region width in pixels. Must be greater than 0.'),
+            .describe(
+              'Left edge in points; 0 is the left edge of the main display, and a display to its left has negative x.',
+            ),
+          y: z
+            .number()
+            .describe(
+              'Top edge in points; 0 is the top edge of the main display, and a display above it has negative y.',
+            ),
+          width: z.number().positive().describe('Region width in points. Must be greater than 0.'),
           height: z
             .number()
             .positive()
-            .describe('Region height in pixels. Must be greater than 0.'),
+            .describe('Region height in points. Must be greater than 0.'),
         })
         .optional()
-        .describe('Pixel region to capture for target=region.'),
+        .describe(
+          'Rectangle to capture for target=region, in points in global display coordinates: the space macos_manage_displays action=list gives each display origin and resolution in, and macos_manage_windows gives window bounds in.',
+        ),
       path: z
         .string()
         .optional()
         .describe(
-          'Absolute path for the output PNG, ending in .png (any case); ~/ expands to the home directory. Its directory must already exist and, with symlinks resolved, lie inside MACOS_SCREENSHOT_DIR (~/Desktop when unset), /tmp, or the home directory. Omit it, or pass an empty string, for a new screenshot-<timestamp>.png in MACOS_SCREENSHOT_DIR.',
+          'Absolute path for the output PNG, ending in .png (any case); ~/ expands to the home directory. Its directory must already exist and, with symlinks resolved, lie inside /tmp, the home directory, or MACOS_SCREENSHOT_DIR (when unset, ~/Desktop, for a path written under ~/Desktop). Omit it, or pass an empty string, for a new screenshot-<timestamp>.png in MACOS_SCREENSHOT_DIR (~/Desktop when unset).',
         ),
       overwrite: z
         .boolean()
@@ -83,10 +91,16 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
       .describe(
         'Absolute path of the full-resolution PNG written to disk, with symlinks in its directory resolved (a /tmp path is reported under /private/tmp).',
       ),
-    width: z.number().describe('Full-resolution image width in pixels, read from the PNG header.'),
+    width: z
+      .number()
+      .describe(
+        "Full-resolution image width in pixels, read from the PNG header: the captured width in points × the captured display's scale_factor (display 0 for target=screen). A window capture also includes the window's shadow, and a region that spans displays with different scale_factor values has no single factor.",
+      ),
     height: z
       .number()
-      .describe('Full-resolution image height in pixels, read from the PNG header.'),
+      .describe(
+        "Full-resolution image height in pixels, read from the PNG header: the captured height in points × the captured display's scale_factor, as for width.",
+      ),
     preview: z
       .string()
       .optional()
@@ -107,7 +121,7 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
       .string()
       .optional()
       .describe(
-        'Present after a target=window capture when the Screen Recording check could not tell whether the permission is granted: names why, and what a capture without the window content means.',
+        'Present when the Screen Recording check before the capture, for any target, could not tell whether the permission is granted: names why, and where to grant it if app windows or their content are missing from the capture.',
       ),
   },
   // The notice can carry osascript's error text, so it renders as a literal.
@@ -116,9 +130,9 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
     {
       reason: 'screen_recording_required',
       code: JsonRpcErrorCode.Forbidden,
-      when: 'target=window while macOS reports Screen Recording as not granted to the MCP host app.',
+      when: 'macOS reports Screen Recording as not granted to the MCP host app, for any target: without it, a capture leaves out app windows and their content.',
       recovery:
-        'Grant Screen Recording in System Settings > Privacy & Security > Screen Recording for your terminal or MCP host app.',
+        'Grant Screen Recording in System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS) for your terminal or MCP host app.',
       thrownBy: 'service',
     },
     {
@@ -139,9 +153,9 @@ export const macosTakeScreenshot = tool('macos_take_screenshot', {
     {
       reason: 'path_not_writable',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'path is not absolute or resolves outside MACOS_SCREENSHOT_DIR, /tmp, and the home directory, or its directory (MACOS_SCREENSHOT_DIR when path is omitted) does not exist or cannot be written.',
+      when: 'path is not absolute or resolves outside MACOS_SCREENSHOT_DIR, /tmp, and the home directory, or its directory (MACOS_SCREENSHOT_DIR when path is omitted) does not exist, cannot be written, or is a folder macOS has not allowed the host app to access (EPERM).',
       recovery:
-        'Pass a path in an existing directory inside MACOS_SCREENSHOT_DIR, /tmp, or the home directory, or create the MACOS_SCREENSHOT_DIR directory.',
+        'Pass a path in an existing directory inside MACOS_SCREENSHOT_DIR, /tmp, or the home directory, or create the MACOS_SCREENSHOT_DIR directory. When macOS denied access (EPERM), allow the host app in System Settings > Privacy & Security > Files & Folders.',
       thrownBy: 'service',
     },
     {

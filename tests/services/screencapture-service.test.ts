@@ -2,7 +2,7 @@
  * @fileoverview Tests for ScreencaptureService at the `execFile` seam, against
  * real files in scratch directories: where a capture may be written and what
  * it may replace, the image and preview sizes read from their file headers,
- * the Screen Recording check before a window capture, and failures that report
+ * the Screen Recording check before every capture, and failures that report
  * the CLI's own error text, never the command line. Every CLI runs by absolute
  * path.
  * @module tests/services/screencapture-service.test
@@ -24,7 +24,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { link, stat } from 'node:fs/promises';
+import { link, lstat, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
@@ -54,12 +54,19 @@ vi.mock('node:os', async (importOriginal) => ({
 }));
 
 /**
- * `link` and `stat` stay real unless a test makes one fail, the way a volume
- * without hard links or a directory that cannot be read does.
+ * `link`, `lstat`, `realpath`, and `stat` stay real unless a test makes one
+ * fail, the way a volume without hard links or a directory that cannot be read
+ * does; a test can also see which paths a call resolved or checked.
  */
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, link: vi.fn(actual.link), stat: vi.fn(actual.stat) };
+  return {
+    ...actual,
+    link: vi.fn(actual.link),
+    lstat: vi.fn(actual.lstat),
+    realpath: vi.fn(actual.realpath),
+    stat: vi.fn(actual.stat),
+  };
 });
 
 /** The real `execFileSync`, for `mkfifo`: Node has no call that makes a FIFO. */
@@ -75,16 +82,18 @@ import {
 } from '@/services/screencapture/screencapture-service.js';
 
 /**
- * Scratch layout. `os.tmpdir()` is under /var/folders on macOS, inside neither
- * /tmp nor the (scratch) home directory, so `OUTSIDE` is in no allowed
- * directory unless a test configures it as MACOS_SCREENSHOT_DIR.
+ * Scratch layout, made in beforeAll, never at collection, so a run that skips
+ * this file's tests leaves nothing behind. `os.tmpdir()` is under /var/folders
+ * on macOS, inside neither /tmp nor the (scratch) home directory, so `OUTSIDE`
+ * is in no allowed directory unless a test configures it as
+ * MACOS_SCREENSHOT_DIR.
  */
-const SCRATCH = realpathSync(mkdtempSync(join(tmpdir(), 'macos-mcp-capture-test-')));
-const HOME = join(SCRATCH, 'home');
-const DESKTOP = join(HOME, 'Desktop');
-const OUTSIDE = join(SCRATCH, 'outside');
+let SCRATCH = '';
+let HOME = '';
+let DESKTOP = '';
+let OUTSIDE = '';
 /** A directory under /tmp, spelled as /tmp. */
-const TMP = mkdtempSync('/tmp/macos-mcp-capture-test-');
+let TMP = '';
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -233,7 +242,10 @@ const RUNNING_FINDER = JSON.stringify([
     localizedName: 'Finder',
     bundleName: 'Finder.app',
     executableName: 'Finder',
+    bundleId: 'com.apple.finder',
     activationPolicy: 0,
+    hidden: false,
+    active: false,
   },
 ]);
 
@@ -338,7 +350,30 @@ function freshHomeDir(): string {
   return mkdtempSync(join(HOME, 'case-'));
 }
 
+/** Every path a call resolved (`realpath`) or checked (`stat`, `lstat`) that is `dir` or lies inside it. */
+function fsCallsInside(dir: string): string[] {
+  return [realpath, stat, lstat]
+    .flatMap((fn) => vi.mocked(fn).mock.calls.map((call) => String(call[0])))
+    .filter((path) => path === dir || path.startsWith(`${dir}/`));
+}
+
+/** A directory where nothing can be created (user-immutable): `mkdtemp` in it fails EPERM. */
+function lockedDir(parent: string): string {
+  const dir = mkdtempSync(join(parent, 'locked-'));
+  execFileSync('/usr/bin/chflags', ['uchg', dir]);
+  return dir;
+}
+
+function unlock(dir: string): void {
+  execFileSync('/usr/bin/chflags', ['nouchg', dir]);
+}
+
 beforeAll(() => {
+  SCRATCH = realpathSync(mkdtempSync(join(tmpdir(), 'macos-mcp-capture-test-')));
+  HOME = join(SCRATCH, 'home');
+  DESKTOP = join(HOME, 'Desktop');
+  OUTSIDE = join(SCRATCH, 'outside');
+  TMP = mkdtempSync('/tmp/macos-mcp-capture-test-');
   home.dir = HOME;
   mkdirSync(DESKTOP, { recursive: true });
   mkdirSync(OUTSIDE, { recursive: true });
@@ -356,8 +391,7 @@ beforeEach(() => {
   previewWrites.length = 0;
   execFileMock.mockReset();
   execFileMock.mockImplementation(fakeCli);
-  vi.mocked(link).mockClear();
-  vi.mocked(stat).mockClear();
+  for (const fn of [link, lstat, realpath, stat]) vi.mocked(fn).mockClear();
 });
 
 describe('ScreencaptureService capture failures', () => {
@@ -390,7 +424,7 @@ describe('ScreencaptureService capture failures', () => {
 });
 
 describe('ScreencaptureService runs every CLI by absolute path', () => {
-  it('screen capture with a preview: screencapture, then sips for the JPEG, and no rm', async () => {
+  it('screen capture with a preview: the Screen Recording check, screencapture, then sips for the JPEG, and no rm', async () => {
     const dir = freshTmpDir();
     const result = await shoot({ path: join(dir, 'shot.png'), includeData: true });
     expect(result).toEqual({
@@ -401,7 +435,23 @@ describe('ScreencaptureService runs every CLI by absolute path', () => {
       preview_width: 1024,
       preview_height: 576,
     });
-    expect(programs()).toEqual([SYSTEM_BINARIES.screencapture, SYSTEM_BINARIES.sips]);
+    expect(programs()).toEqual([
+      SYSTEM_BINARIES.osascript,
+      SYSTEM_BINARIES.screencapture,
+      SYSTEM_BINARIES.sips,
+    ]);
+    expect(execFileMock.mock.calls[0]?.[1].at(-1)).toContain('CGPreflightScreenCaptureAccess');
+  });
+
+  it('region capture: the Screen Recording check, then screencapture -R with the region', async () => {
+    await shoot({
+      target: 'region',
+      region: { x: -1512, y: 40, width: 300, height: 200 },
+      path: join(freshTmpDir(), 'r.png'),
+    });
+    expect(programs()).toEqual([SYSTEM_BINARIES.osascript, SYSTEM_BINARIES.screencapture]);
+    expect(execFileMock.mock.calls[0]?.[1].at(-1)).toContain('CGPreflightScreenCaptureAccess');
+    expect(execFileMock.mock.calls[1]?.[1].slice(0, 3)).toEqual(['-x', '-R', '-1512,40,300,200']);
   });
 
   it('window capture: the Screen Recording check, the window-id script, then the capture', async () => {
@@ -429,10 +479,11 @@ describe('ScreencaptureService runs every CLI by absolute path', () => {
     expect(dirname(dirname(out))).toBe(realpathSync(dir));
   });
 
-  it('display capture runs screencapture by absolute path with the 1-based display flag', async () => {
+  it('display capture: the Screen Recording check, then screencapture with the 1-based display flag', async () => {
     await shoot({ target: 'display', displayIndex: 2, path: join(freshTmpDir(), 'd.png') });
-    expect(execFileMock.mock.calls[0]?.[0]).toBe(SYSTEM_BINARIES.screencapture);
-    expect(execFileMock.mock.calls[0]?.[1].slice(0, 2)).toEqual(['-x', '-D3']);
+    expect(programs()).toEqual([SYSTEM_BINARIES.osascript, SYSTEM_BINARIES.screencapture]);
+    expect(execFileMock.mock.calls[0]?.[1].at(-1)).toContain('CGPreflightScreenCaptureAccess');
+    expect(execFileMock.mock.calls[1]?.[1].slice(0, 2)).toEqual(['-x', '-D3']);
   });
 });
 
@@ -528,6 +579,82 @@ describe('ScreencaptureService: where a capture may be written', () => {
     expect(readdirSync(join(SCRATCH, 'home2'))).toEqual([]);
   });
 
+  it('with MACOS_SCREENSHOT_DIR unset, a path in /tmp, in the home directory, or outside both resolves and checks nothing in ~/Desktop', async () => {
+    for (const path of [join(freshTmpDir(), 'a.png'), join(freshHomeDir(), 'b.png')]) {
+      await shoot({ path });
+    }
+    for (const path of [join(OUTSIDE, 'x.png'), '/etc/x.png']) {
+      const err = await failureOf(shoot({ path }));
+      expect(err, path).toMatchObject({ code: -32007, data: { reason: 'path_not_writable' } });
+    }
+    expect(fsCallsInside(DESKTOP)).toEqual([]);
+    // The seam sees the directories these calls did resolve.
+    expect(fsCallsInside(HOME)).not.toEqual([]);
+  });
+
+  it('a whitespace-only MACOS_SCREENSHOT_DIR reads as unset: a path outside /tmp, the home directory, and ~/Desktop is refused, and nothing in ~/Desktop is resolved', async () => {
+    const err = await failureOf(shoot({ screenshotDir: '   ', path: join(OUTSIDE, 'x.png') }));
+    expect(err).toMatchObject({ code: -32007, data: { reason: 'path_not_writable' } });
+    expect(err.message).toContain('outside the allowed screenshot directories');
+    expect(fsCallsInside(DESKTOP)).toEqual([]);
+  });
+
+  it('with MACOS_SCREENSHOT_DIR unset, a path written under ~/Desktop through a symlink that leaves it is refused before any capture', async () => {
+    const target = join(OUTSIDE, 'escape-target');
+    mkdirSync(target);
+    symlinkSync(target, join(DESKTOP, 'escape'));
+    const err = await failureOf(shoot({ path: '~/Desktop/escape/x.png' }));
+    expect(err).toMatchObject({
+      code: -32007,
+      message: 'Path "~/Desktop/escape/x.png" is outside the allowed screenshot directories.',
+      data: { reason: 'path_not_writable' },
+    });
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(readdirSync(target)).toEqual([]);
+  });
+
+  it('with MACOS_SCREENSHOT_DIR unset and ~/Desktop a symlink out of the home directory, a path written under ~/Desktop and the default path land in its target', async () => {
+    const linkedHome = join(SCRATCH, 'home-linked-desktop');
+    const target = join(OUTSIDE, 'real-desktop');
+    mkdirSync(linkedHome);
+    mkdirSync(target);
+    symlinkSync(target, join(linkedHome, 'Desktop'));
+    home.dir = linkedHome;
+    try {
+      const written = await shoot({ path: '~/Desktop/x.png' });
+      expect(written.path).toBe(join(target, 'x.png'));
+      expect(fsCallsInside(join(linkedHome, 'Desktop'))).not.toEqual([]);
+      const omitted = await shoot({});
+      expect(dirname(omitted.path)).toBe(target);
+      /**
+       * The target spelled out, not through ~/Desktop, is outside /tmp and the
+       * home directory, and only a path written under ~/Desktop resolves it.
+       */
+      const err = await failureOf(shoot({ path: join(target, 'y.png') }));
+      expect(err).toMatchObject({
+        code: -32007,
+        message: `Path "${join(target, 'y.png')}" is outside the allowed screenshot directories.`,
+        data: { reason: 'path_not_writable' },
+      });
+    } finally {
+      home.dir = HOME;
+    }
+    // x.png and the default-path file, nothing else.
+    expect(readdirSync(target)).toHaveLength(2);
+  });
+
+  it('MACOS_SCREENSHOT_DIR set outside /tmp and the home directory is resolved only for a path outside both', async () => {
+    const configured = join(OUTSIDE, 'configured');
+    mkdirSync(configured);
+    for (const path of [join(freshTmpDir(), 'a.png'), join(freshHomeDir(), 'b.png')]) {
+      await shoot({ screenshotDir: configured, path });
+    }
+    expect(fsCallsInside(configured)).toEqual([]);
+    const inside = await shoot({ screenshotDir: configured, path: join(configured, 'c.png') });
+    expect(inside.path).toBe(join(configured, 'c.png'));
+    expect(fsCallsInside(configured)).not.toEqual([]);
+  });
+
   it('a relative path, or ~ followed by a user name, is refused before any capture', async () => {
     mkdirSync(join(HOME, 'other'), { recursive: true });
     for (const path of ['shot.png', 'Desktop/shot.png', '~other/shot.png']) {
@@ -614,6 +741,88 @@ describe('ScreencaptureService: where a capture may be written', () => {
     }
     expect(execFileMock).not.toHaveBeenCalled();
   });
+
+  /**
+   * EPERM is macOS refusing the host app a privacy-protected folder (Desktop,
+   * Documents, Downloads, a removable volume) it has no Files & Folders grant
+   * for: from resolving the directory, checking the path, or writing the
+   * capture's private directory in it, for an explicit path or the default one.
+   */
+  const FILES_AND_FOLDERS_HINT =
+    'Allow your terminal or MCP host app to access this folder in System Settings > Privacy & Security > Files & Folders, or pass a path in another directory.';
+  const eperm = () => Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+
+  const EPERM_CASES: Array<
+    [string, () => { opts: Partial<ScreenshotOptions>; dir: string; cleanup?: () => void }]
+  > = [
+    [
+      'resolving the directory of path',
+      () => {
+        const dir = freshTmpDir();
+        vi.mocked(realpath).mockRejectedValueOnce(eperm());
+        return { opts: { path: join(dir, 'x.png') }, dir };
+      },
+    ],
+    [
+      'reading the status of the directory of path',
+      () => {
+        const dir = freshTmpDir();
+        vi.mocked(stat).mockRejectedValueOnce(eperm());
+        return { opts: { path: join(dir, 'x.png') }, dir };
+      },
+    ],
+    [
+      'checking what is at path',
+      () => {
+        const dir = freshTmpDir();
+        vi.mocked(lstat).mockRejectedValueOnce(eperm());
+        return { opts: { path: join(dir, 'x.png') }, dir: realpathSync(dir) };
+      },
+    ],
+    [
+      'writing in the directory of path',
+      () => {
+        const dir = lockedDir(TMP);
+        return {
+          opts: { path: join(dir, 'x.png') },
+          dir: realpathSync(dir),
+          cleanup: () => unlock(dir),
+        };
+      },
+    ],
+    [
+      'resolving MACOS_SCREENSHOT_DIR for the default path',
+      () => {
+        const dir = freshHomeDir();
+        vi.mocked(realpath).mockRejectedValueOnce(eperm());
+        return { opts: { screenshotDir: dir }, dir };
+      },
+    ],
+    [
+      'writing in MACOS_SCREENSHOT_DIR for the default path',
+      () => {
+        const dir = lockedDir(HOME);
+        return { opts: { screenshotDir: dir }, dir, cleanup: () => unlock(dir) };
+      },
+    ],
+  ];
+
+  for (const [label, arrange] of EPERM_CASES) {
+    it(`EPERM ${label} is path_not_writable naming the directory, with the Files & Folders hint, before any capture`, async () => {
+      const { opts, dir, cleanup } = arrange();
+      try {
+        const err = await failureOf(shoot(opts));
+        expect(err).toMatchObject({
+          code: -32007,
+          message: `macOS denied access to ${JSON.stringify(dir)} (EPERM).`,
+          data: { reason: 'path_not_writable', recovery: { hint: FILES_AND_FOLDERS_HINT } },
+        });
+      } finally {
+        cleanup?.();
+      }
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
+  }
 
   it('a file name longer than the file system allows is refused as invalid input naming path, before any capture', async () => {
     const path = join(freshTmpDir(), `${'x'.repeat(300)}.png`);
@@ -1088,7 +1297,7 @@ describe('ScreencaptureService: sizes come from the image headers', () => {
     fakes.sips = 'missing';
     const result = await shoot({ path: join(freshTmpDir(), 'big.png') });
     expect(result).toMatchObject({ width: 3840, height: 2160 });
-    expect(programs()).toEqual([SYSTEM_BINARIES.screencapture]);
+    expect(programs()).toEqual([SYSTEM_BINARIES.osascript, SYSTEM_BINARIES.screencapture]);
   });
 
   for (const { label, fake, includeData, code, message } of [
@@ -1174,45 +1383,117 @@ describe('ScreencaptureService: sizes come from the image headers', () => {
   }
 });
 
-describe('ScreencaptureService: Screen Recording check before a window capture', () => {
-  const windowShot = (dir: string, ctx = createMockContext()) =>
-    shoot({ target: 'window', appName: 'Finder', pids: [748], path: join(dir, 'w.png') }, ctx);
+describe('ScreencaptureService: Screen Recording check before every capture', () => {
+  /** Every target, each with the argument it needs. */
+  const TARGETS: Array<[string, Partial<ScreenshotOptions>]> = [
+    ['screen', { target: 'screen' }],
+    ['display', { target: 'display', displayIndex: 1 }],
+    ['region', { target: 'region', region: { x: 0, y: 0, width: 10, height: 10 } }],
+    ['window', { target: 'window', appName: 'Finder', pids: [748] }],
+  ];
 
-  it('denied: screen_recording_required, after only the check, with nothing written', async () => {
-    const dir = freshTmpDir();
-    fakes.screenRecording = 'denied';
-    const err = await failureOf(windowShot(dir));
-    expect(err).toMatchObject({ code: -32005, data: { reason: 'screen_recording_required' } });
-    expect(programs()).toEqual([SYSTEM_BINARIES.osascript]);
-    expect(readdirSync(dir)).toEqual([]);
-  });
+  const PANE =
+    'System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS)';
 
-  for (const [state, why] of [
-    [
-      'fails',
-      'the check could not run: osascript failed: execution error: Error: Script failed (-2700)',
-    ],
-    ['garbled', 'the check printed unexpected output: "true"'],
-  ] as const) {
-    it(`a check that cannot tell (${state}) still captures, and the notice says why`, async () => {
-      fakes.screenRecording = state;
-      const result = await windowShot(freshTmpDir());
-      expect(captureCalls()).toHaveLength(1);
-      expect(result.notice).toBe(
-        `Screen Recording could not be confirmed before the capture (${why}). If the capture lacks the window's content, grant Screen Recording in System Settings > Privacy & Security > Screen Recording for your terminal or MCP host app.`,
+  for (const [label, opts] of TARGETS) {
+    it(`${label}, denied: screen_recording_required with the declared recovery, after only the check, with nothing written`, async () => {
+      const dir = freshTmpDir();
+      fakes.screenRecording = 'denied';
+      const err = await failureOf(shoot({ ...opts, path: join(dir, 'shot.png') }));
+      expect(err).toMatchObject({
+        code: -32005,
+        message:
+          'Screen Recording permission is required for every screenshot: without it, macOS leaves app windows and their content out of the capture.',
+        data: {
+          reason: 'screen_recording_required',
+          recovery: {
+            hint: macosTakeScreenshot.errors?.find((e) => e.reason === 'screen_recording_required')
+              ?.recovery,
+          },
+        },
+      });
+      expect((err.data as { recovery: { hint: string } }).recovery.hint).toBe(
+        `Grant Screen Recording in ${PANE} for your terminal or MCP host app.`,
       );
+      expect(programs()).toEqual([SYSTEM_BINARIES.osascript]);
+      expect(execFileMock.mock.calls[0]?.[1].at(-1)).toContain('CGPreflightScreenCaptureAccess');
+      expect(readdirSync(dir)).toEqual([]);
+    });
+
+    for (const [state, why] of [
+      [
+        'fails',
+        'the check could not run: osascript failed: execution error: Error: Script failed (-2700)',
+      ],
+      ['garbled', 'the check printed unexpected output: "true"'],
+    ] as const) {
+      it(`${label}, a check that cannot tell (${state}): still captures, and the notice says why`, async () => {
+        fakes.screenRecording = state;
+        const result = await shoot({ ...opts, path: join(freshTmpDir(), 'shot.png') });
+        expect(captureCalls()).toHaveLength(1);
+        expect(result.notice).toBe(
+          `Screen Recording could not be confirmed before the capture (${why}). If app windows or their content are missing from the capture, grant Screen Recording in ${PANE} for your terminal or MCP host app.`,
+        );
+      });
+    }
+
+    it(`${label}, granted: the check runs before anything else, and no notice`, async () => {
+      const result = await shoot({ ...opts, path: join(freshTmpDir(), 'shot.png') });
+      expect(result.notice).toBeUndefined();
+      expect(programs()[0]).toBe(SYSTEM_BINARIES.osascript);
+      expect(execFileMock.mock.calls[0]?.[1].at(-1)).toContain('CGPreflightScreenCaptureAccess');
+      expect(captureCalls()).toHaveLength(1);
+    });
+
+    it(`${label}: a refused path fails before the check`, async () => {
+      fakes.screenRecording = 'denied';
+      const dir = freshTmpDir();
+      writeFileSync(join(dir, 'exists.png'), 'mine');
+      const refused: Array<[string, number, string]> = [
+        [join(dir, 'shot.txt'), -32602, 'invalid_arguments'],
+        [join(OUTSIDE, 'shot.png'), -32007, 'path_not_writable'],
+        [join(dir, 'exists.png'), -32002, 'path_exists'],
+      ];
+      for (const [path, code, reason] of refused) {
+        const err = await failureOf(shoot({ ...opts, path }));
+        expect(err, path).toMatchObject({ code, data: { reason } });
+      }
+      expect(execFileMock).not.toHaveBeenCalled();
     });
   }
 
-  it('a request cancelled during the check rejects as cancelled and never captures', async () => {
+  it('a request already cancelled when the check starts rejects as cancelled and never captures', async () => {
     const controller = new AbortController();
     fakes.screenRecording = 'fails';
     controller.abort();
     const err = await failureOf(
-      windowShot(freshTmpDir(), createMockContext({ signal: controller.signal })),
+      shoot(
+        { target: 'screen', path: join(freshTmpDir(), 'c.png') },
+        createMockContext({ signal: controller.signal }),
+      ),
     );
     expect(err.name).toBe('AbortError');
     expect(captureCalls()).toHaveLength(0);
+  });
+
+  it('a request cancelled while the check runs rejects with the caller’s cancellation, never a capture with a notice, and never captures', async () => {
+    const dir = freshTmpDir();
+    const cancelled = new Error('cancelled by the caller');
+    const controller = new AbortController();
+    execFileMock.mockImplementation((cmd, args, opts, cb) => {
+      if ((args.at(-1) ?? '').includes('CGPreflightScreenCaptureAccess')) {
+        controller.abort(cancelled);
+      }
+      return fakeCli(cmd, args, opts, cb);
+    });
+    const err = await failureOf(
+      shoot({ path: join(dir, 'c.png') }, createMockContext({ signal: controller.signal })),
+    );
+    expect(err).toBe(cancelled);
+    // Only the check ran, and the cancellation reached it while it ran.
+    expect(programs()).toEqual([SYSTEM_BINARIES.osascript]);
+    expect(signalOf(execFileMock.mock.calls[0]?.[2])?.aborted).toBe(true);
+    expect(readdirSync(dir)).toEqual([]);
   });
 });
 
@@ -1349,13 +1630,14 @@ describe('ScreencaptureService: a cancelled request places nothing', () => {
     });
   }
 
-  it('a request cancelled before it starts runs no CLI to completion and writes nothing', async () => {
+  it('a request cancelled before it starts runs no CLI and writes nothing', async () => {
     const dir = freshTmpDir();
     const { ctx, cancel } = cancellable();
     cancel();
     const err = await failureOf(shoot({ path: join(dir, 'c.png') }, ctx));
     expect(err).toBe(CANCELLED);
-    expect(signalOf(captureCalls()[0]?.[2])?.aborted).toBe(true);
+    // The Screen Recording check, the first CLI, never spawns on a cancelled request.
+    expect(execFileMock).not.toHaveBeenCalled();
     expect(readdirSync(dir)).toEqual([]);
   });
 
@@ -1494,11 +1776,14 @@ describe('ScreencaptureService and macos_take_screenshot: one deadline for the w
     ]);
   });
 
+  /**
+   * The Screen Recording check runs first for every target and takes 4.9 s, so
+   * the deadline passes during the capture, or, for a window, during the lookup.
+   */
   for (const [label, opts] of [
     ['a screen capture', { target: 'screen' }],
     ['a region capture', { target: 'region', region: { x: 0, y: 0, width: 10, height: 10 } }],
     ['a display capture', { target: 'display', displayIndex: 1 }],
-    // The Screen Recording check takes 4.9 s, so the deadline passes during the window lookup.
     ['the window lookup', { target: 'window', appName: 'Finder', pids: [748] }],
   ] as Array<[string, Partial<ScreenshotOptions>]>) {
     it(`${label} still running at the deadline ends as a Timeout, counted from startedAtMs`, async () => {

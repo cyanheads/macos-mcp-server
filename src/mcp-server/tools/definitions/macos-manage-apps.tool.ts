@@ -10,11 +10,11 @@ import { internalError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { suppliedArg, withActionRequirements } from '@/mcp-server/tools/action-requirements.js';
 import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
 import { appleScriptLiteral } from '@/services/osascript/applescript-literal.js';
-import { FOREGROUND_PROCESSES_JXA } from '@/services/osascript/foreground-processes.js';
 import {
   getOsascriptService,
   type OsascriptService,
 } from '@/services/osascript/osascript-service.js';
+import { applicationName, readRunningApps } from '@/services/osascript/resolve-app-pids.js';
 import { execFailure, execFailureDetail } from '@/utils/exec-failure.js';
 import { markdownLiteral } from '@/utils/markdown-literal.js';
 import { parseJsonOutput } from '@/utils/parse-json-output.js';
@@ -64,7 +64,13 @@ const AppInfoSchema = z
     name: z
       .string()
       .describe(
-        'System Events process name, which can differ from the .app name that quit, hide, and show resolve.',
+        'Process name: the executable name, as System Events reports the process (e.g. "firefox" for Firefox, "Code" for Visual Studio Code). Can differ from app_name.',
+      ),
+    app_name: z
+      .string()
+      .nullable()
+      .describe(
+        'Application name: the .app bundle file name without .app (e.g. "Visual Studio Code"), the app_name quit, force_quit, hide, and show take. Null for an app with no .app bundle.',
       ),
     bundle_id: z
       .string()
@@ -77,17 +83,6 @@ const AppInfoSchema = z
   .describe('Running application with its process details.');
 
 type AppInfo = z.infer<typeof AppInfoSchema>;
-
-/** What the list script prints: one entry per System Events process that is not background-only. */
-const ListedAppsSchema = z.array(
-  z.object({
-    name: z.string(),
-    bundleId: z.string().nullable(),
-    pid: z.number().int(),
-    visible: z.boolean(),
-    frontmost: z.boolean(),
-  }),
-);
 
 /** What the frontmost script prints: the frontmost System Events process, or null when none is. */
 const FrontmostProcessSchema = z
@@ -102,7 +97,7 @@ const FrontmostProcessSchema = z
 export const macosManageApps = tool('macos_manage_apps', {
   title: 'Manage macOS Apps',
   description:
-    'Manage application lifecycle: list all running user-facing apps, get the frontmost app, launch or activate an app, gracefully quit or force-quit a process, or hide/show an app. Launch activates the app if already running; use hidden=true to start in the background without bringing it forward. Force-quit terminates immediately (SIGKILL) without saving. Hide and show require Accessibility permission.',
+    "Manage application lifecycle: list the running apps that have a Dock icon, get the frontmost app, launch or activate an app, gracefully quit or force-quit a process, or hide/show an app. list needs no permission, and each app's app_name is the name quit, force_quit, hide, and show take. Launch activates the app if already running; use hidden=true to start in the background without bringing it forward. Force-quit terminates immediately (SIGKILL) without saving. frontmost, force_quit, hide, and show script System Events, which needs Automation > System Events; hide, show, and frontmost's window_title read also need Accessibility.",
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   input: withActionRequirements(
     z.object({
@@ -143,11 +138,15 @@ export const macosManageApps = tool('macos_manage_apps', {
     apps: z
       .array(AppInfoSchema)
       .optional()
-      .describe('Running user-facing applications. Present for action=list.'),
+      .describe(
+        'Running apps that have a Dock icon (NSWorkspace activation policy regular), in NSWorkspace order. Present for action=list.',
+      ),
     // frontmost
     app: z
       .object({
-        name: z.string().describe('Application name.'),
+        name: z
+          .string()
+          .describe('Process name, as System Events reports it (e.g. "firefox" for Firefox).'),
         bundle_id: z.string().nullable().describe('Bundle identifier.'),
         pid: z.number().describe('Process ID.'),
         window_title: z
@@ -202,34 +201,38 @@ export const macosManageApps = tool('macos_manage_apps', {
 
     switch (input.action) {
       case 'list': {
-        const { stdout } = await osascript.runJxa(
-          `
-            ${FOREGROUND_PROCESSES_JXA}
-            const procs = foregroundProcesses(Application("System Events"));
-            JSON.stringify(procs.map(({pid, name, proc}) => ({
-              name,
-              bundleId: proc.bundleIdentifier ? proc.bundleIdentifier() : null,
-              pid,
-              visible: proc.visible(),
-              frontmost: proc.frontmost()
-            })));
-          `,
-          ctx,
-          { exclusion: 'process-enumeration' },
-        );
-        const raw = parseJsonOutput(ListedAppsSchema, stdout);
-        if (!raw) {
-          throw internalError(
-            'The running-application script printed output in an unexpected shape.',
-          );
-        }
-        const apps: AppInfo[] = raw.map((a) => ({
-          name: a.name,
-          bundle_id: a.bundleId,
-          pid: a.pid,
-          visible: a.visible,
-          frontmost: a.frontmost,
-        }));
+        /**
+         * NSWorkspace's regular apps (activation policy 0: a Dock icon and
+         * windows), the apps System Events lists as not background-only. The
+         * read sends no Apple event, so it needs no permission, and it takes no
+         * side of the process-enumeration exclusion. The executable name is the
+         * process name System Events reports ("firefox", where the localized
+         * name is "Firefox").
+         */
+        const apps: AppInfo[] = (await readRunningApps(ctx))
+          .filter((app) => app.activationPolicy === 0)
+          .map((app) => {
+            // A running process has an executable; NSWorkspace reporting none is a fault, not an app to name.
+            if (app.executableName === null) {
+              throw internalError(
+                `NSWorkspace reported no executable for the running app with PID ${app.pid}.`,
+              );
+            }
+            // Likewise its hidden and active state: a flag that could not be read is never guessed.
+            if (app.hidden === null || app.active === null) {
+              throw internalError(
+                `NSWorkspace reported no hidden or active state for the running app with PID ${app.pid}.`,
+              );
+            }
+            return {
+              name: app.executableName,
+              app_name: applicationName(app),
+              bundle_id: app.bundleId,
+              pid: app.pid,
+              visible: !app.hidden,
+              frontmost: app.active,
+            };
+          });
         ctx.log.info('macos_manage_apps list', { count: apps.length });
         return { action: 'list', apps };
       }
@@ -362,7 +365,7 @@ export const macosManageApps = tool('macos_manage_apps', {
   format: (result) => {
     const lines: string[] = [`**action:** ${result.action}`];
     // Names, bundle identifiers, and titles are text the apps carry, so they render as literals.
-    const bundleId = (id: string | null) => (id === null ? '(none)' : markdownLiteral(id));
+    const orNone = (text: string | null) => (text === null ? '(none)' : markdownLiteral(text));
     // List fields
     if (result.apps !== undefined) {
       lines.push(`## Running Applications (${result.apps.length})`);
@@ -371,7 +374,7 @@ export const macosManageApps = tool('macos_manage_apps', {
           .filter(Boolean)
           .join(', ');
         lines.push(
-          `- name: ${markdownLiteral(a.name)} pid: ${a.pid} visible: ${a.visible} frontmost: ${a.frontmost}${flags ? ` — ${flags}` : ''} bundle_id: ${bundleId(a.bundle_id)}`,
+          `- name: ${markdownLiteral(a.name)} app_name: ${orNone(a.app_name)} pid: ${a.pid} visible: ${a.visible} frontmost: ${a.frontmost}${flags ? ` — ${flags}` : ''} bundle_id: ${orNone(a.bundle_id)}`,
         );
       }
     }
@@ -379,7 +382,7 @@ export const macosManageApps = tool('macos_manage_apps', {
     if (result.app !== undefined) {
       const a = result.app;
       lines.push(`name: ${markdownLiteral(a.name)} pid: ${a.pid}`);
-      lines.push(`bundle_id: ${bundleId(a.bundle_id)}`);
+      lines.push(`bundle_id: ${orNone(a.bundle_id)}`);
       lines.push(
         `window_title: ${a.window_title === null ? '(no window)' : markdownLiteral(a.window_title)}`,
       );

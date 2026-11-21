@@ -32,6 +32,7 @@ vi.mock('node:child_process', () => ({
 
 import { macosManageApps } from '@/mcp-server/tools/definitions/macos-manage-apps.tool.js';
 import { SYSTEM_BINARIES } from '@/services/binaries/binary-paths.js';
+import { runExclusive } from '@/services/osascript/osascript-exclusion.js';
 import {
   getOsascriptService,
   initOsascriptService,
@@ -179,8 +180,6 @@ const seError = (errorNumber: number, message: string) =>
 
 /** A fake System Events process. */
 interface FakeProcess {
-  /** System Events' backgroundOnly: a process with no UI, which list leaves out. False when omitted. */
-  backgroundOnly?: boolean;
   bundleId: string | null;
   /** False when omitted. */
   frontmost?: boolean;
@@ -193,51 +192,31 @@ interface FakeProcess {
 }
 
 interface FakeOptions {
-  /**
-   * What a read of the process list — the bulk `processes.unixId()` read, or a
-   * `processes.whose({backgroundOnly: false})()` query — throws on each of its
-   * first calls, in order, before it answers: the failures an app starting or
-   * quitting mid-read causes.
-   */
-  enumerationFailures?: Error[];
-  /**
-   * How many bulk `processes.name()` reads launch Preview right after, so the
-   * reads after it see one process more than the ones before it.
-   */
-  launchesDuringRead?: number;
   /** The PID the running check and PID lookup report for each app name; an app it leaves out is not running. */
   running?: Record<string, number>;
 }
 
 /** The filters a script may pass to `processes.whose()`, each with the process field it tests. */
 const WHOSE_FIELDS = {
-  backgroundOnly: (p: FakeProcess) => p.backgroundOnly ?? false,
   frontmost: (p: FakeProcess) => p.frontmost ?? false,
   unixId: (p: FakeProcess) => p.pid,
 } as const;
 
 /**
  * Runs every JXA script the tool builds in a VM context whose
- * `Application("System Events")` answers from `procs`, whose `delay()` counts
- * instead of sleeping, and whose uncaught errors reach the service as the
- * stderr osascript prints for them (`execution error: Error: Error: <message>
- * (<number>)`). The AppleScript running check and PID lookup answer from
- * `running`, as `macOS()` does.
+ * `Application("System Events")` answers from `procs`, and whose uncaught
+ * errors reach the service as the stderr osascript prints for them
+ * (`execution error: Error: Error: <message> (<number>)`). The AppleScript
+ * running check and PID lookup answer from `running`, as `macOS()` does.
  *
  * Specifiers resolve as System Events' do. A process a query returns —
  * `processes.whose(...)()` — is a by-name specifier: it reaches the first
  * process with that name at each use. `processes.whose({unixId})[0]` resolves
- * by unix id instead, and `processes.byName(name)` by name. A by-name miss
- * fails -1728, an index miss -1719. `events` records each visibility write,
- * naming the process it landed on, and each `Application(name).activate()`,
- * in order.
+ * by unix id instead. A by-name miss fails -1728, an index miss -1719.
+ * `events` records each visibility write, naming the process it landed on, and
+ * each `Application(name).activate()`, in order.
  */
-function fakeSystemEvents(
-  procs: FakeProcess[],
-  { enumerationFailures = [], launchesDuringRead = 0, running = {} }: FakeOptions = {},
-) {
-  /** Reads of the process list, failed ones included, and the waits between them. */
-  const calls = { reads: 0, delays: 0 };
+function fakeSystemEvents(procs: FakeProcess[], { running = {} }: FakeOptions = {}) {
   const events: string[] = [];
 
   /** A process found at each use, or the error System Events raises for a miss. */
@@ -270,33 +249,8 @@ function fakeSystemEvents(
     ),
   });
 
-  /** A read of the process list: counted, and failing while `enumerationFailures` lasts. */
-  const readProcessList = () => {
-    calls.reads++;
-    const failure = enumerationFailures.shift();
-    if (failure) throw failure;
-  };
-
   const systemEvents = {
     processes: {
-      unixId: () => {
-        readProcessList();
-        return procs.map((p) => p.pid);
-      },
-      name: () => {
-        const names = procs.map((p) => p.name);
-        if (launchesDuringRead > 0) {
-          launchesDuringRead--;
-          procs.push({
-            name: 'Preview',
-            pid: 90_000 + procs.length,
-            bundleId: 'com.apple.Preview',
-          });
-        }
-        return names;
-      },
-      backgroundOnly: () => procs.map((p) => p.backgroundOnly ?? false),
-      byName: (name: string) => processOf(named(name)),
       whose: (filter: Record<string, unknown>) => {
         const matching = () =>
           procs.filter((p) =>
@@ -307,20 +261,14 @@ function fakeSystemEvents(
               return WHOSE_FIELDS[key as keyof typeof WHOSE_FIELDS](p) === value;
             }),
           );
-        return Object.assign(
-          () => {
-            if ('backgroundOnly' in filter) readProcessList();
-            return matching().map((p) => processOf(named(p.name)));
-          },
-          {
-            0: processOf(() => {
-              const [proc] = matching();
-              if (!proc) throw seError(-1719, 'Invalid index.');
-              return proc;
-            }),
-            unixId: () => matching().map((p) => p.pid),
-          },
-        );
+        return Object.assign(() => matching().map((p) => processOf(named(p.name))), {
+          0: processOf(() => {
+            const [proc] = matching();
+            if (!proc) throw seError(-1719, 'Invalid index.');
+            return proc;
+          }),
+          unixId: () => matching().map((p) => p.pid),
+        });
       },
     },
   };
@@ -329,9 +277,6 @@ function fakeSystemEvents(
   const globals = () => ({
     Application: (name: string) =>
       name === 'System Events' ? systemEvents : { activate: () => events.push(`activate ${name}`) },
-    delay: () => {
-      calls.delays++;
-    },
   });
 
   fakeExec((cmd, args) => {
@@ -343,8 +288,82 @@ function fakeSystemEvents(
       return { stderr: `execution error: Error: Error: ${message} (${errorNumber})` };
     }
   });
-  return { calls, events };
+  return { events };
 }
+
+/**
+ * NSWorkspace running-application entries as the list's script prints them,
+ * shaped after real regular apps on macOS 27: Firefox runs as the executable
+ * `firefox`, Visual Studio Code as `Code`.
+ */
+const FINDER = {
+  pid: 748,
+  localizedName: 'Finder',
+  bundleName: 'Finder.app',
+  executableName: 'Finder',
+  bundleId: 'com.apple.finder',
+  activationPolicy: 0,
+  hidden: false,
+  active: false,
+};
+const FIREFOX = {
+  pid: 2227,
+  localizedName: 'Firefox',
+  bundleName: 'Firefox.app',
+  executableName: 'firefox',
+  bundleId: 'org.mozilla.firefox',
+  activationPolicy: 0,
+  hidden: false,
+  active: true,
+};
+const VSCODE = {
+  pid: 43063,
+  localizedName: 'Code',
+  bundleName: 'Visual Studio Code.app',
+  executableName: 'Code',
+  bundleId: 'com.microsoft.VSCode',
+  activationPolicy: 0,
+  hidden: true,
+  active: false,
+};
+/** A regular app run from a bare executable: no .app bundle, no bundle identifier. */
+const BARE = {
+  pid: 5150,
+  localizedName: 'qemu-system-aarch64',
+  bundleName: null,
+  executableName: 'qemu-system-aarch64',
+  bundleId: null,
+  activationPolicy: 0,
+  hidden: false,
+  active: false,
+};
+/** An accessory app (menu bar, no Dock icon), which list leaves out. */
+const CONTROL_CENTER = {
+  pid: 753,
+  localizedName: 'Control Center',
+  bundleName: 'ControlCenter.app',
+  executableName: 'ControlCenter',
+  bundleId: 'com.apple.controlcenter',
+  activationPolicy: 1,
+  hidden: false,
+  active: false,
+};
+/** An app extension (prohibited policy) sharing Messages' name, which list leaves out. */
+const MESSAGES_EXTENSION = {
+  pid: 1886,
+  localizedName: 'Messages',
+  bundleName: 'Messages Assistant Extension.appex',
+  executableName: 'Messages Assistant Extension',
+  bundleId: 'com.apple.MobileSMS.MessagesAssistantExtension',
+  activationPolicy: 2,
+  hidden: false,
+  active: false,
+};
+/** An app that has exited keeps an entry with no process, which list leaves out. */
+const EXITED = { ...FINDER, pid: -1, localizedName: 'Gone', executableName: 'Gone' };
+
+/** The NSWorkspace script prints `entries`; every other script and binary answers as `macOS({})`. */
+const workspace = (...entries: object[]) => macOS({}, JSON.stringify(entries));
 
 describe('macosManageApps', () => {
   beforeEach(() => {
@@ -352,51 +371,249 @@ describe('macosManageApps', () => {
     fakeExec(macOS({}));
   });
 
-  it.each([
-    {
-      label: 'list with apps running',
-      action: 'list',
-      stdout: JSON.stringify([
-        { name: 'Finder', bundleId: 'com.apple.finder', pid: 100, visible: true, frontmost: false },
-        { name: 'Safari', bundleId: 'com.apple.Safari', pid: 200, visible: true, frontmost: true },
-        { name: 'Helper', bundleId: null, pid: 300, visible: false, frontmost: false },
-      ]),
-      output: {
+  describe('list', () => {
+    it('lists each regular app from NSWorkspace on both surfaces, named by its executable, with the application name lifecycle actions take', async () => {
+      fakeExec(workspace(FINDER, FIREFOX, VSCODE, BARE));
+      const result = await runToolContract(macosManageApps, { action: 'list' });
+      expect(result.structuredContent).toEqual({
         action: 'list',
         apps: [
           {
             name: 'Finder',
+            app_name: 'Finder',
             bundle_id: 'com.apple.finder',
-            pid: 100,
+            pid: 748,
             visible: true,
             frontmost: false,
           },
+          // The executable name, as System Events names the process, not the localized "Firefox".
           {
-            name: 'Safari',
-            bundle_id: 'com.apple.Safari',
-            pid: 200,
+            name: 'firefox',
+            app_name: 'Firefox',
+            bundle_id: 'org.mozilla.firefox',
+            pid: 2227,
             visible: true,
             frontmost: true,
           },
-          { name: 'Helper', bundle_id: null, pid: 300, visible: false, frontmost: false },
+          {
+            name: 'Code',
+            app_name: 'Visual Studio Code',
+            bundle_id: 'com.microsoft.VSCode',
+            pid: 43063,
+            visible: false,
+            frontmost: false,
+          },
+          {
+            name: 'qemu-system-aarch64',
+            app_name: null,
+            bundle_id: null,
+            pid: 5150,
+            visible: true,
+            frontmost: false,
+          },
         ],
-      },
-      text: [
+      });
+      expect(contentText(result).split('\n')).toEqual([
         '**action:** list',
-        '## Running Applications (3)',
-        '- name: `Finder` pid: 100 visible: true frontmost: false bundle_id: `com.apple.finder`',
-        '- name: `Safari` pid: 200 visible: true frontmost: true — frontmost bundle_id: `com.apple.Safari`',
-        // A null bundle identifier is named, never dropped: plain text, where a real one is a code span.
-        '- name: `Helper` pid: 300 visible: false frontmost: false — hidden bundle_id: (none)',
-      ],
-    },
-    {
-      label: 'list with no apps running',
-      action: 'list',
-      stdout: '[]',
-      output: { action: 'list', apps: [] },
-      text: ['**action:** list', '## Running Applications (0)'],
-    },
+        '## Running Applications (4)',
+        '- name: `Finder` app_name: `Finder` pid: 748 visible: true frontmost: false bundle_id: `com.apple.finder`',
+        '- name: `firefox` app_name: `Firefox` pid: 2227 visible: true frontmost: true — frontmost bundle_id: `org.mozilla.firefox`',
+        '- name: `Code` app_name: `Visual Studio Code` pid: 43063 visible: false frontmost: false — hidden bundle_id: `com.microsoft.VSCode`',
+        // A null is named, never dropped: plain text, where a real value is a code span.
+        '- name: `qemu-system-aarch64` app_name: (none) pid: 5150 visible: true frontmost: false bundle_id: (none)',
+      ]);
+    });
+
+    it('leaves out accessory apps, app extensions, and exited apps, keeping NSWorkspace order', async () => {
+      fakeExec(workspace(CONTROL_CENTER, MESSAGES_EXTENSION, VSCODE, EXITED, FINDER));
+      const result = await runToolContract(macosManageApps, { action: 'list' });
+      const { apps } = result.structuredContent as { apps: Array<{ pid: number }> };
+      expect(apps.map((a) => a.pid)).toEqual([43063, 748]);
+      expect(contentText(result).split('\n')[1]).toBe('## Running Applications (2)');
+    });
+
+    it('lists two regular apps that share an executable name as two rows, each with its own details', async () => {
+      const vscodium = {
+        ...VSCODE,
+        pid: 51000,
+        bundleName: 'VSCodium.app',
+        bundleId: 'com.vscodium',
+        hidden: false,
+      };
+      fakeExec(workspace(VSCODE, vscodium));
+      const result = await runToolContract(macosManageApps, { action: 'list' });
+      expect(result.structuredContent).toEqual({
+        action: 'list',
+        apps: [
+          {
+            name: 'Code',
+            app_name: 'Visual Studio Code',
+            bundle_id: 'com.microsoft.VSCode',
+            pid: 43063,
+            visible: false,
+            frontmost: false,
+          },
+          {
+            name: 'Code',
+            app_name: 'VSCodium',
+            bundle_id: 'com.vscodium',
+            pid: 51000,
+            visible: true,
+            frontmost: false,
+          },
+        ],
+      });
+    });
+
+    it.each([
+      ['no apps running', []],
+      ['only accessory apps and extensions running', [CONTROL_CENTER, MESSAGES_EXTENSION]],
+    ])('with %s lists none, on both surfaces', async (_label, entries) => {
+      fakeExec(workspace(...entries));
+      const result = await runToolContract(macosManageApps, { action: 'list' });
+      expect(result.structuredContent).toEqual({ action: 'list', apps: [] });
+      expect(contentText(result)).toBe(
+        ['**action:** list', '## Running Applications (0)'].join('\n'),
+      );
+    });
+
+    it('renders a bundle identifier spelled "(none)" apart from a null one', async () => {
+      fakeExec(workspace({ ...FINDER, bundleId: '(none)' }, { ...BARE, pid: 500 }));
+      const result = await runToolContract(macosManageApps, { action: 'list' });
+      expect(contentText(result).split('\n').slice(2)).toEqual([
+        '- name: `Finder` app_name: `Finder` pid: 748 visible: true frontmost: false bundle_id: `(none)`',
+        '- name: `qemu-system-aarch64` app_name: (none) pid: 500 visible: true frontmost: false bundle_id: (none)',
+      ]);
+    });
+
+    it('fails as an internal error naming the PID when a regular app has no executable name', async () => {
+      fakeExec(workspace(FINDER, { ...VSCODE, executableName: null }));
+      expect(await failureOf({ action: 'list' })).toEqual({
+        code: -32603,
+        message: 'NSWorkspace reported no executable for the running app with PID 43063.',
+        data: undefined,
+      });
+    });
+
+    it.each(['hidden', 'active'])(
+      'fails as an internal error naming the PID when a regular app’s %s flag could not be read',
+      async (flag) => {
+        fakeExec(workspace(FINDER, { ...VSCODE, [flag]: null }));
+        expect(await failureOf({ action: 'list' })).toEqual({
+          code: -32603,
+          message:
+            'NSWorkspace reported no hidden or active state for the running app with PID 43063.',
+          data: undefined,
+        });
+      },
+    );
+
+    it('lists the regular apps past an accessory app whose flags could not be read', async () => {
+      fakeExec(workspace({ ...CONTROL_CENTER, hidden: null, active: null }, FINDER));
+      const result = await runToolContract(macosManageApps, { action: 'list' });
+      expect(result.structuredContent).toMatchObject({ action: 'list', apps: [{ pid: 748 }] });
+      expect(contentText(result).split('\n')[1]).toBe('## Running Applications (1)');
+    });
+
+    it('leaves out an app whose activation policy could not be read, on both surfaces', async () => {
+      fakeExec(workspace(FINDER, { ...VSCODE, activationPolicy: null }));
+      const result = await runToolContract(macosManageApps, { action: 'list' });
+      const { apps } = result.structuredContent as { apps: Array<{ pid: number }> };
+      expect(apps.map((a) => a.pid)).toEqual([748]);
+      expect(contentText(result).split('\n').slice(1)).toEqual([
+        '## Running Applications (1)',
+        '- name: `Finder` app_name: `Finder` pid: 748 visible: true frontmost: false bundle_id: `com.apple.finder`',
+      ]);
+    });
+
+    it.each([
+      'Finder',
+      '{}',
+      '',
+      // The shape the System Events list printed, which the NSWorkspace read does not accept.
+      '[{"name":"Finder","bundleId":"com.apple.finder","pid":748,"visible":true,"frontmost":false}]',
+    ])('whose NSWorkspace read prints %j fails as an internal error', async (stdout) => {
+      fakeExec(macOS({}, stdout));
+      expect(await failureOf({ action: 'list' })).toEqual({
+        code: -32603,
+        message: 'The running-application list read from NSWorkspace was not a JSON list.',
+        data: undefined,
+      });
+    });
+
+    it('reads NSWorkspace in one osascript run and scripts no app, so a System Events denial never reaches it', async () => {
+      fakeExec((cmd, args) =>
+        (args.at(-1) ?? '').includes('System Events')
+          ? {
+              stderr:
+                'execution error: Not authorized to send Apple events to System Events. (-1743)',
+            }
+          : workspace(FINDER)(cmd, args),
+      );
+      const result = await runToolContract(macosManageApps, { action: 'list' });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({ apps: [{ pid: 748 }] });
+      const calls = execFileMock.mock.calls;
+      expect(calls).toHaveLength(1);
+      const [cmd, args] = calls[0] ?? [];
+      expect(cmd).toBe(SYSTEM_BINARIES.osascript);
+      expect(args?.slice(0, 3)).toEqual(['-l', 'JavaScript', '-e']);
+      const script = args?.at(-1) ?? '';
+      expect(script).toContain('$.NSWorkspace.sharedWorkspace.runningApplications');
+      expect(script).not.toMatch(/System Events|Application\(|tell application/);
+    });
+
+    it.each(['nsscreen-read', 'process-enumeration'] as const)(
+      'runs while a %s run holds the exclusion, taking no side of it',
+      async (side) => {
+        fakeExec(workspace(FINDER));
+        let release: () => void = () => {};
+        const held = runExclusive(
+          side,
+          new AbortController().signal,
+          10_000,
+          () => new Promise<void>((resolve) => (release = resolve)),
+        );
+        let listed: unknown;
+        const listing = settle({ action: 'list' }).then((outcome) => {
+          listed = outcome;
+        });
+        try {
+          // One macrotask turn: every step of a list that is not waiting on the exclusion has run.
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(listed).toMatchObject({ value: { action: 'list', apps: [{ pid: 748 }] } });
+        } finally {
+          release();
+          await Promise.all([held, listing]);
+        }
+      },
+    );
+
+    it('each row’s app_name is the name quit, force_quit, hide, and show address the app by', async () => {
+      fakeExec(workspace(VSCODE));
+      const listed = await runToolContract(macosManageApps, { action: 'list' });
+      const [row] = (listed.structuredContent as { apps: Array<{ app_name: string | null }> }).apps;
+      const appName = row?.app_name ?? '';
+      expect(appName).toBe('Visual Studio Code');
+      const lit = '"Visual Studio Code"';
+      for (const [action, first] of [
+        ['quit', `application ${lit} is running`],
+        ['force_quit', pidScript(lit)],
+        ['hide', pidScript(lit)],
+        ['show', pidScript(lit)],
+      ] as const) {
+        execFileMock.mockReset();
+        // Only the application name reads as running: the process name "Code" would not.
+        fakeExec(macOS({ [appName]: VSCODE.pid }));
+        expect(await settle({ action, app_name: appName })).toEqual({
+          value: { action, success: true, app_name: appName },
+        });
+        expect(spawns()[0]).toEqual([SYSTEM_BINARIES.osascript, ['-e', first]]);
+      }
+    });
+  });
+
+  it.each([
     {
       label: 'frontmost with a window open',
       action: 'frontmost',
@@ -427,27 +644,6 @@ describe('macosManageApps', () => {
         'window_title: (no window)',
       ],
     },
-    {
-      label: 'list with a bundle identifier spelled "(none)" beside a null one',
-      action: 'list',
-      stdout: JSON.stringify([
-        { name: 'Odd', bundleId: '(none)', pid: 400, visible: true, frontmost: false },
-        { name: 'Bare', bundleId: null, pid: 500, visible: true, frontmost: false },
-      ]),
-      output: {
-        action: 'list',
-        apps: [
-          { name: 'Odd', bundle_id: '(none)', pid: 400, visible: true, frontmost: false },
-          { name: 'Bare', bundle_id: null, pid: 500, visible: true, frontmost: false },
-        ],
-      },
-      text: [
-        '**action:** list',
-        '## Running Applications (2)',
-        '- name: `Odd` pid: 400 visible: true frontmost: false bundle_id: `(none)`',
-        '- name: `Bare` pid: 500 visible: true frontmost: false bundle_id: (none)',
-      ],
-    },
   ] as const)(
     '$label returns the same result on both surfaces',
     async ({ action, stdout, output, text }) => {
@@ -458,27 +654,17 @@ describe('macosManageApps', () => {
     },
   );
 
-  it.each([
-    ['list', 'Finder', 'running-application'],
-    ['list', '{}', 'running-application'],
-    [
-      'list',
-      '[{"name":"Finder","bundleId":"com.apple.finder","pid":"748","visible":true,"frontmost":false}]',
-      'running-application',
-    ],
-    ['list', '', 'running-application'],
-    ['frontmost', 'Safari', 'frontmost-application'],
-    ['frontmost', '[]', 'frontmost-application'],
-    ['frontmost', '{"name":"Safari","pid":200}', 'frontmost-application'],
-    ['frontmost', '', 'frontmost-application'],
-  ])('%s whose script prints %j fails as an internal error', async (action, stdout, script) => {
-    fakeExec(macOS({}, stdout));
-    expect(await failureOf({ action })).toEqual({
-      code: -32603,
-      message: `The ${script} script printed output in an unexpected shape.`,
-      data: undefined,
-    });
-  });
+  it.each(['Safari', '[]', '{"name":"Safari","pid":200}', ''])(
+    'frontmost whose script prints %j fails as an internal error',
+    async (stdout) => {
+      fakeExec(macOS({}, stdout));
+      expect(await failureOf({ action: 'frontmost' })).toEqual({
+        code: -32603,
+        message: 'The frontmost-application script printed output in an unexpected shape.',
+        data: undefined,
+      });
+    },
+  );
 
   describe('frontmost', () => {
     it('with no process in front runs its script to null and fails as no_frontmost_app', async () => {
@@ -839,111 +1025,6 @@ describe('macosManageApps cancellation', () => {
   });
 });
 
-describe('macosManageApps list foreground-process read retry', () => {
-  /**
-   * Finder and Safari, Safari in front, plus a background-only agent the list
-   * leaves out. A successful read of the process table reads the unix ids
-   * twice, before and after the names and backgroundOnly flags; a failed one
-   * once.
-   */
-  const listing = (options: FakeOptions) =>
-    fakeSystemEvents(
-      [
-        { name: 'Finder', pid: 100, bundleId: 'com.apple.finder' },
-        { name: 'Safari', pid: 200, bundleId: 'com.apple.Safari', frontmost: true },
-        { name: 'cloudd', pid: 150, bundleId: 'com.apple.cloudd', backgroundOnly: true },
-      ],
-      options,
-    ).calls;
-
-  beforeEach(() => {
-    execFileMock.mockReset();
-  });
-
-  it('reads the process list again after -1719 and -10000 and lists every app on both surfaces', async () => {
-    const calls = listing({
-      enumerationFailures: [
-        seError(-1719, 'Invalid index.'),
-        seError(-10000, 'AppleEvent handler failed.'),
-      ],
-    });
-    const result = await runToolContract(macosManageApps, { action: 'list' });
-    expect(result.structuredContent).toEqual({
-      action: 'list',
-      apps: [
-        {
-          name: 'Finder',
-          bundle_id: 'com.apple.finder',
-          pid: 100,
-          visible: true,
-          frontmost: false,
-        },
-        { name: 'Safari', bundle_id: 'com.apple.Safari', pid: 200, visible: true, frontmost: true },
-      ],
-    });
-    expect(contentText(result).split('\n')).toEqual([
-      '**action:** list',
-      '## Running Applications (2)',
-      '- name: `Finder` pid: 100 visible: true frontmost: false bundle_id: `com.apple.finder`',
-      '- name: `Safari` pid: 200 visible: true frontmost: true — frontmost bundle_id: `com.apple.Safari`',
-    ]);
-    expect(calls).toEqual({ reads: 4, delays: 2 });
-  });
-
-  it('reads the process table again when an app launches between its reads, listing that app too', async () => {
-    const calls = listing({ launchesDuringRead: 1 });
-    const result = await runToolContract(macosManageApps, { action: 'list' });
-    expect(result.structuredContent).toEqual({
-      action: 'list',
-      apps: [
-        {
-          name: 'Finder',
-          bundle_id: 'com.apple.finder',
-          pid: 100,
-          visible: true,
-          frontmost: false,
-        },
-        { name: 'Safari', bundle_id: 'com.apple.Safari', pid: 200, visible: true, frontmost: true },
-        {
-          name: 'Preview',
-          bundle_id: 'com.apple.Preview',
-          pid: 90_003,
-          visible: true,
-          frontmost: false,
-        },
-      ],
-    });
-    expect(calls).toEqual({ reads: 4, delays: 1 });
-  });
-
-  it('fails with the third attempt’s error when every read of the process list fails', async () => {
-    const calls = listing({
-      enumerationFailures: [
-        seError(-1719, 'Invalid index.'),
-        seError(-1719, 'Invalid index.'),
-        seError(-10000, 'AppleEvent handler failed.'),
-        seError(-1719, 'Invalid index.'),
-      ],
-    });
-    expect(await failureOf({ action: 'list' })).toEqual({
-      code: -32603,
-      message:
-        'osascript failed: execution error: Error: Error: AppleEvent handler failed. (-10000)',
-      data: undefined,
-    });
-    expect(calls).toEqual({ reads: 3, delays: 2 });
-  });
-
-  it('does not read the process list again after any other error', async () => {
-    const calls = listing({ enumerationFailures: [seError(-1728, "Can't get object.")] });
-    expect(await failureOf({ action: 'list' })).toMatchObject({
-      code: -32603,
-      message: "osascript failed: execution error: Error: Error: Can't get object. (-1728)",
-    });
-    expect(calls).toEqual({ reads: 1, delays: 0 });
-  });
-});
-
 /**
  * System Events answers a query with by-name specifiers, which reach the first
  * process of that name, so each of these runs the tool's scripts against two
@@ -953,62 +1034,6 @@ describe('macosManageApps list foreground-process read retry', () => {
 describe('macosManageApps with processes that share a name', () => {
   beforeEach(() => {
     execFileMock.mockReset();
-  });
-
-  it('list reports two foreground processes named Code as two apps, each with its own details', async () => {
-    fakeSystemEvents([
-      { name: 'Finder', pid: 748, bundleId: 'com.apple.finder' },
-      { name: 'Code', pid: 100, bundleId: 'com.microsoft.VSCode' },
-      { name: 'Code', pid: 200, bundleId: 'com.vscodium', visible: false },
-    ]);
-    const result = await runToolContract(macosManageApps, { action: 'list' });
-    expect(result.structuredContent).toEqual({
-      action: 'list',
-      apps: [
-        {
-          name: 'Finder',
-          bundle_id: 'com.apple.finder',
-          pid: 748,
-          visible: true,
-          frontmost: false,
-        },
-        {
-          name: 'Code',
-          bundle_id: 'com.microsoft.VSCode',
-          pid: 100,
-          visible: true,
-          frontmost: false,
-        },
-        { name: 'Code', bundle_id: 'com.vscodium', pid: 200, visible: false, frontmost: false },
-      ],
-    });
-    expect(contentText(result).split('\n')).toEqual([
-      '**action:** list',
-      '## Running Applications (3)',
-      '- name: `Finder` pid: 748 visible: true frontmost: false bundle_id: `com.apple.finder`',
-      '- name: `Code` pid: 100 visible: true frontmost: false bundle_id: `com.microsoft.VSCode`',
-      '- name: `Code` pid: 200 visible: false frontmost: false — hidden bundle_id: `com.vscodium`',
-    ]);
-  });
-
-  it('list reports the Messages app, not a background-only process listed before it under the same name', async () => {
-    fakeSystemEvents([
-      { name: 'Messages', pid: 3000, bundleId: 'com.example.messages-agent', backgroundOnly: true },
-      { name: 'Messages', pid: 3314, bundleId: 'com.apple.MobileSMS', frontmost: true },
-    ]);
-    const result = await runToolContract(macosManageApps, { action: 'list' });
-    expect(result.structuredContent).toEqual({
-      action: 'list',
-      apps: [
-        {
-          name: 'Messages',
-          bundle_id: 'com.apple.MobileSMS',
-          pid: 3314,
-          visible: true,
-          frontmost: true,
-        },
-      ],
-    });
   });
 
   it('frontmost reports the process in front, and its window, when an earlier process shares its name', async () => {
@@ -1077,25 +1102,30 @@ describe('macosManageApps content[] reads back as structuredContent under Common
     fakeExec(macOS({}));
   });
 
-  it('list: each name and bundle identifier', async () => {
-    fakeSystemEvents(
-      MARKUP.map((name, i) => ({
-        name,
-        pid: 1000 + i,
-        bundleId: i === 0 ? null : (MARKUP.at(-i) ?? null),
-      })),
+  it('list: each name, application name, and bundle identifier', async () => {
+    fakeExec(
+      workspace(
+        ...MARKUP.map((name, i) => ({
+          ...FINDER,
+          pid: 1000 + i,
+          executableName: name,
+          bundleName: `${MARKUP.at(-i - 1)}.app`,
+          bundleId: i === 0 ? null : (MARKUP.at(-i) ?? null),
+        })),
+      ),
     );
     const result = await runToolContract(macosManageApps, { action: 'list' });
     const { apps } = result.structuredContent as {
-      apps: Array<{ name: string; pid: number; bundle_id: string | null }>;
+      apps: Array<{ name: string; app_name: string | null; pid: number; bundle_id: string | null }>;
     };
     expect(apps.map((a) => a.name)).toEqual(MARKUP);
+    expect(apps.map((a) => a.app_name)).toEqual([...MARKUP].reverse());
     expect(commonMarkBlocks(contentText(result))).toEqual([
       'action: list',
       `Running Applications (${MARKUP.length})`,
       ...apps.map(
         (a) =>
-          `name: ${a.name} pid: ${a.pid} visible: true frontmost: false bundle_id: ${a.bundle_id ?? '(none)'}`,
+          `name: ${a.name} app_name: ${a.app_name} pid: ${a.pid} visible: true frontmost: false bundle_id: ${a.bundle_id ?? '(none)'}`,
       ),
     ]);
   });

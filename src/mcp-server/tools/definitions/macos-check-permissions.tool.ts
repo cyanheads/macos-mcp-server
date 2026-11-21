@@ -1,5 +1,5 @@
 /**
- * @fileoverview Permission check tool — reports Accessibility, Screen Recording, Automation > Finder, Automation > Music, and Notification status from Apple's prompt-free checks.
+ * @fileoverview Permission check tool — reports Accessibility, Screen Recording, Automation > System Events, Automation > Finder, Automation > Music, and Notification status from Apple's prompt-free checks.
  * @module mcp-server/tools/definitions/macos-check-permissions
  */
 
@@ -47,7 +47,7 @@ const reasonEntry = <K extends string>(key: K, check: PermissionCheck) =>
 export const macosCheckPermissions = tool('macos_check_permissions', {
   title: 'Check macOS Permissions',
   description:
-    "Reports which macOS permissions this server relies on are granted to the calling process, read from Apple's prompt-free checks: Accessibility (every macos_manage_windows action, list included; macos_manage_apps hide and show, and the window_title frontmost reads; the ⌃⌘Q keystroke macos_control_system lock sends before it falls back to the screen saver), Screen Recording (window screenshots), Automation > Finder (macos_manage_finder frontmost_path, get_selection, and trash), and Automation > Music (macos_control_music). No check sends an Apple event to another app, captures the screen, or can show a permission prompt. Each field is true when granted, false when not, and null when the check cannot tell, with the reason in unknown_reasons: Automation > Finder and Automation > Music read null until macOS has asked for consent and while that app is not running. Notifications is always null, since macOS offers no prompt-free check for it. Call this before operations that need these permissions.",
+    "Reports which macOS permissions this server relies on are granted to the calling process, read from Apple's prompt-free checks: Accessibility (every macos_manage_windows action, list included; macos_manage_apps hide and show, and the window_title frontmost reads; the ⌃⌘Q keystroke macos_control_system lock sends before it falls back to the screen saver), Screen Recording (screenshots), Automation > System Events (macos_control_appearance; every macos_manage_windows action; macos_manage_apps frontmost, force_quit, hide, and show; the macos_control_system lock keystroke), Automation > Finder (macos_manage_finder frontmost_path, get_selection, and trash), and Automation > Music (macos_control_music). No check sends an Apple event to another app, launches one, captures the screen, or can show a permission prompt. Each field is true when granted, false when not, and null when the check cannot tell, with the reason in unknown_reasons: an Automation field reads null until macOS has asked for consent and while its app is not running. System Events starts when a call scripts it and quits once idle, so automation_system_events reads null until such a call and again once System Events has quit; it answers right after an app, window, appearance, or lock call. Notifications is always null, since macOS offers no prompt-free check for it. Call this before operations that need these permissions.",
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({}),
   output: z.object({
@@ -62,6 +62,12 @@ export const macosCheckPermissions = tool('macos_check_permissions', {
       .nullable()
       .describe(
         'True when Screen Recording is granted, false when it is not (denied or never asked), null when the check could not run (see unknown_reasons.screen_recording).',
+      ),
+    automation_system_events: z
+      .boolean()
+      .nullable()
+      .describe(
+        'True when Automation > System Events is granted, false when it was denied, null when macOS has not asked yet, System Events is not running (it starts when a call scripts it and quits once idle), or the check could not run (see unknown_reasons.automation_system_events).',
       ),
     automation_finder: z
       .boolean()
@@ -85,6 +91,10 @@ export const macosCheckPermissions = tool('macos_check_permissions', {
       .object({
         accessibility: z.string().optional().describe('Why accessibility is null.'),
         screen_recording: z.string().optional().describe('Why screen_recording is null.'),
+        automation_system_events: z
+          .string()
+          .optional()
+          .describe('Why automation_system_events is null.'),
         automation_finder: z.string().optional().describe('Why automation_finder is null.'),
         automation_music: z.string().optional().describe('Why automation_music is null.'),
         notifications: z.string().optional().describe('Why notifications is null.'),
@@ -99,24 +109,33 @@ export const macosCheckPermissions = tool('macos_check_permissions', {
 
   async handler(_input, ctx) {
     ctx.log.info('macos_check_permissions');
-    const [accessibility, screen_recording, automation_finder, automation_music, calling_process] =
-      await Promise.all([
-        checkAccessibility(ctx),
-        checkScreenRecording(ctx),
-        checkAutomation('Finder', ctx),
-        checkAutomation('Music', ctx),
-        getCallingProcess(ctx.signal),
-      ]);
+    const [
+      accessibility,
+      screen_recording,
+      automation_system_events,
+      automation_finder,
+      automation_music,
+      calling_process,
+    ] = await Promise.all([
+      checkAccessibility(ctx),
+      checkScreenRecording(ctx),
+      checkAutomation('System Events', ctx),
+      checkAutomation('Finder', ctx),
+      checkAutomation('Music', ctx),
+      getCallingProcess(ctx.signal),
+    ]);
 
     return {
       accessibility: fieldValue(accessibility),
       screen_recording: fieldValue(screen_recording),
+      automation_system_events: fieldValue(automation_system_events),
       automation_finder: fieldValue(automation_finder),
       automation_music: fieldValue(automation_music),
       notifications: null,
       unknown_reasons: {
         ...reasonEntry('accessibility', accessibility),
         ...reasonEntry('screen_recording', screen_recording),
+        ...reasonEntry('automation_system_events', automation_system_events),
         ...reasonEntry('automation_finder', automation_finder),
         ...reasonEntry('automation_music', automation_music),
         notifications: NOTIFICATIONS_UNKNOWN,
@@ -138,6 +157,7 @@ export const macosCheckPermissions = tool('macos_check_permissions', {
       '',
       `**Accessibility:** ${show(result.accessibility, reasons.accessibility)}`,
       `**Screen Recording:** ${show(result.screen_recording, reasons.screen_recording)}`,
+      `**Automation > System Events:** ${show(result.automation_system_events, reasons.automation_system_events)}`,
       `**Automation > Finder:** ${show(result.automation_finder, reasons.automation_finder)}`,
       `**Automation > Music:** ${show(result.automation_music, reasons.automation_music)}`,
       `**Notifications:** ${show(result.notifications, reasons.notifications)}`,

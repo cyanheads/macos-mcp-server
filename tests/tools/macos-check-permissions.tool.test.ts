@@ -41,12 +41,14 @@ interface Outcomes {
   accessibility: ProbeOutcome;
   automationFinder: ProbeOutcome;
   automationMusic: ProbeOutcome;
+  automationSystemEvents: ProbeOutcome;
   screenRecording: ProbeOutcome;
 }
 
 const ALL_GRANTED: Outcomes = {
   accessibility: '{"granted":true}',
   screenRecording: '{"granted":true}',
+  automationSystemEvents: '{"status":0}',
   automationFinder: '{"status":0}',
   automationMusic: '{"status":0}',
 };
@@ -86,11 +88,13 @@ function answer(outcomes: Outcomes, cancel?: { controller: AbortController; on: 
       ? outcomes.accessibility
       : script.includes('CGPreflightScreenCaptureAccess')
         ? outcomes.screenRecording
-        : script.includes("descriptorWithBundleIdentifier('com.apple.finder')")
-          ? outcomes.automationFinder
-          : script.includes("descriptorWithBundleIdentifier('com.apple.Music')")
-            ? outcomes.automationMusic
-            : { stderr: `unexpected probe script: ${script}` };
+        : script.includes("descriptorWithBundleIdentifier('com.apple.systemevents')")
+          ? outcomes.automationSystemEvents
+          : script.includes("descriptorWithBundleIdentifier('com.apple.finder')")
+            ? outcomes.automationFinder
+            : script.includes("descriptorWithBundleIdentifier('com.apple.Music')")
+              ? outcomes.automationMusic
+              : { stderr: `unexpected probe script: ${script}` };
     if (typeof outcome === 'string') cb(null, { stdout: `${outcome}\n`, stderr: '' });
     else {
       cb(
@@ -129,6 +133,7 @@ describe('macosCheckPermissions', () => {
     expect(result.structuredContent).toEqual({
       accessibility: true,
       screen_recording: true,
+      automation_system_events: true,
       automation_finder: true,
       automation_music: true,
       notifications: null,
@@ -139,6 +144,7 @@ describe('macosCheckPermissions', () => {
     expect(lines).toContain('**Calling Process:** `ghostty`');
     expect(lines).toContain('**Accessibility:** ✓ Granted');
     expect(lines).toContain('**Screen Recording:** ✓ Granted');
+    expect(lines).toContain('**Automation > System Events:** ✓ Granted');
     expect(lines).toContain('**Automation > Finder:** ✓ Granted');
     expect(lines).toContain('**Automation > Music:** ✓ Granted');
     expect(lines).toContain(`**Notifications:** Unknown — \`${NOTIFICATIONS_REASON}\``);
@@ -148,6 +154,7 @@ describe('macosCheckPermissions', () => {
     answer({
       accessibility: '{"granted":false}',
       screenRecording: '{"granted":false}',
+      automationSystemEvents: '{"status":-1743}',
       automationFinder: '{"status":-1743}',
       automationMusic: '{"status":-1743}',
     });
@@ -155,6 +162,7 @@ describe('macosCheckPermissions', () => {
     expect(result.structuredContent).toEqual({
       accessibility: false,
       screen_recording: false,
+      automation_system_events: false,
       automation_finder: false,
       automation_music: false,
       notifications: null,
@@ -164,6 +172,7 @@ describe('macosCheckPermissions', () => {
     const lines = contentLines(result);
     expect(lines).toContain('**Accessibility:** ✗ Not granted');
     expect(lines).toContain('**Screen Recording:** ✗ Not granted');
+    expect(lines).toContain('**Automation > System Events:** ✗ Not granted');
     expect(lines).toContain('**Automation > Finder:** ✗ Not granted');
     expect(lines).toContain('**Automation > Music:** ✗ Not granted');
   });
@@ -187,6 +196,7 @@ describe('macosCheckPermissions', () => {
       expect(result.structuredContent).toEqual({
         accessibility: true,
         screen_recording: true,
+        automation_system_events: true,
         automation_finder: null,
         automation_music: true,
         notifications: null,
@@ -216,6 +226,7 @@ describe('macosCheckPermissions', () => {
       expect(result.structuredContent).toEqual({
         accessibility: true,
         screen_recording: true,
+        automation_system_events: true,
         automation_finder: true,
         automation_music: null,
         notifications: null,
@@ -228,10 +239,49 @@ describe('macosCheckPermissions', () => {
     },
   );
 
+  it.each([
+    [
+      'macOS has not asked yet',
+      '{"status":-1744}',
+      'macOS has not asked yet; it asks for consent the first time this host sends System Events an Apple event',
+    ],
+    [
+      'System Events is not running',
+      '{"status":-600}',
+      'System Events is not running; it starts when a call scripts it and quits once idle, so this null says nothing about the grant',
+    ],
+    [
+      'its probe failed',
+      { stderr: 'execution error: Error: boom (-2700)' },
+      'the check could not run: osascript failed: execution error: Error: boom (-2700)',
+    ],
+  ] as const)(
+    'reports Automation > System Events as unknown, with the reason, while %s, leaving the other fields alone',
+    async (_label, automationSystemEvents, reason) => {
+      answer({ ...ALL_GRANTED, automationSystemEvents });
+      const result = await runToolContract(macosCheckPermissions, {});
+      expect(result.structuredContent).toEqual({
+        accessibility: true,
+        screen_recording: true,
+        automation_system_events: null,
+        automation_finder: true,
+        automation_music: true,
+        notifications: null,
+        unknown_reasons: { automation_system_events: reason, notifications: NOTIFICATIONS_REASON },
+        calling_process: 'ghostty',
+      });
+      const lines = contentLines(result);
+      expect(lines).toContain(`**Automation > System Events:** Unknown — \`${reason}\``);
+      expect(lines).toContain('**Automation > Finder:** ✓ Granted');
+      expect(lines).toContain('**Automation > Music:** ✓ Granted');
+    },
+  );
+
   it('reports a timed-out or failed probe as unknown with its reason on both surfaces, never granted', async () => {
     answer({
       accessibility: TIMED_OUT,
       screenRecording: { stderr: 'execution error: Error: boom (-2700)' },
+      automationSystemEvents: TIMED_OUT,
       automationFinder: TIMED_OUT,
       automationMusic: { stderr: 'execution error: Error: boom (-2700)' },
     });
@@ -243,12 +293,14 @@ describe('macosCheckPermissions', () => {
     expect(result.structuredContent).toEqual({
       accessibility: null,
       screen_recording: null,
+      automation_system_events: null,
       automation_finder: null,
       automation_music: null,
       notifications: null,
       unknown_reasons: {
         accessibility: timedOut,
         screen_recording: failed,
+        automation_system_events: timedOut,
         automation_finder: timedOut,
         automation_music: failed,
         notifications: NOTIFICATIONS_REASON,
@@ -258,6 +310,7 @@ describe('macosCheckPermissions', () => {
     const lines = contentLines(result);
     expect(lines).toContain(`**Accessibility:** Unknown — \`${timedOut}\``);
     expect(lines).toContain(`**Screen Recording:** Unknown — \`${failed}\``);
+    expect(lines).toContain(`**Automation > System Events:** Unknown — \`${timedOut}\``);
     expect(lines).toContain(`**Automation > Finder:** Unknown — \`${timedOut}\``);
     expect(lines).toContain(`**Automation > Music:** Unknown — \`${failed}\``);
   });
@@ -293,12 +346,14 @@ describe('macosCheckPermissions', () => {
       const result = {
         accessibility: null,
         screen_recording: null,
+        automation_system_events: null,
         automation_finder: null,
         automation_music: null,
         notifications: null,
         unknown_reasons: {
           accessibility: `a ${value}`,
           screen_recording: `s ${value}`,
+          automation_system_events: `e ${value}`,
           automation_finder: `f ${value}`,
           automation_music: `m ${value}`,
           notifications: `n ${value}`,
@@ -311,7 +366,7 @@ describe('macosCheckPermissions', () => {
       expect(commonMarkBlocks(text)).toEqual([
         'macOS Permission Status',
         `Calling Process: ${value}`,
-        `Accessibility: Unknown — a ${value}\nScreen Recording: Unknown — s ${value}\nAutomation > Finder: Unknown — f ${value}\nAutomation > Music: Unknown — m ${value}\nNotifications: Unknown — n ${value}`,
+        `Accessibility: Unknown — a ${value}\nScreen Recording: Unknown — s ${value}\nAutomation > System Events: Unknown — e ${value}\nAutomation > Finder: Unknown — f ${value}\nAutomation > Music: Unknown — m ${value}\nNotifications: Unknown — n ${value}`,
         'To grant missing permissions: System Settings > Privacy & Security > [permission type]',
       ]);
     },
@@ -324,11 +379,13 @@ describe('macosCheckPermissions', () => {
       [SYSTEM_BINARIES.osascript, ['-l', 'JavaScript', '-e']],
       [SYSTEM_BINARIES.osascript, ['-l', 'JavaScript', '-e']],
       [SYSTEM_BINARIES.osascript, ['-l', 'JavaScript', '-e']],
+      [SYSTEM_BINARIES.osascript, ['-l', 'JavaScript', '-e']],
       [SYSTEM_BINARIES.ps, ['-o', 'comm=', '-p']],
     ]);
-    for (const [, args] of execFileMock.mock.calls.slice(0, 4)) {
-      expect(args[3]).not.toMatch(/Application\(|tell application/);
-    }
+    const scripts = execFileMock.mock.calls.slice(0, 5).map(([, args]) => args[3] ?? '');
+    for (const script of scripts) expect(script).not.toMatch(/Application\(|tell application/);
+    // System Events is asked about by bundle identifier, which neither launches it nor sends it anything.
+    expect(scripts.filter((s) => s.includes('com.apple.systemevents'))).toHaveLength(1);
   });
 
   it('passes the caller’s signal to ps beside its own timeout', async () => {

@@ -3,6 +3,7 @@
  * @module tests/tools/macos-control-audio.tool.test
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -193,13 +194,47 @@ describe('macosControlAudio', () => {
     ).rejects.toMatchObject({ data: { reason: 'device_not_found' } });
   });
 
+  it('switch_input forwards the service device_ambiguous with its declared recovery on both surfaces, reading no default after it', async () => {
+    const message =
+      '"Pro Microphone" matches 2 input devices: "iPhone Microphone", "MacBook Pro Microphone". The default input device is unchanged.';
+    svc.switchDevice.mockRejectedValue(
+      new McpError(JsonRpcErrorCode.ValidationError, message, { reason: 'device_ambiguous' }),
+    );
+    const hint = macosControlAudio.errors?.find((e) => e.reason === 'device_ambiguous')?.recovery;
+    const result = await runToolContract(macosControlAudio, {
+      action: 'switch_input',
+      device: 'Pro Microphone',
+    });
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32007, message, data: { reason: 'device_ambiguous', recovery: { hint } } },
+    });
+    expect(textOf(result).split('\n')).toContain(`Recovery: ${hint}`);
+    expect(svc.getCurrentDevice).not.toHaveBeenCalled();
+  });
+
   it('switch_input with a blank device is rejected by the input schema', () => {
     expect(() => macosControlAudio.input.parse({ action: 'switch_input', device: '' })).toThrow();
   });
 
-  it('declares both reasons as service-thrown, switchaudio_unavailable naming every location searched', () => {
+  it('describes how a switch picks one device by name, and that two or more fail as device_ambiguous', () => {
+    expect(macosControlAudio.description).toContain(
+      'A switch picks one device of the requested type by name: a name identical to device wins when one device has it; otherwise the one name equal to device ignoring case, else the one name containing it ignoring case — "webcam" picks "HD Pro Webcam C920". When two or more names fit, the switch fails as device_ambiguous, naming each, and changes nothing.',
+    );
+    expect(macosControlAudio.input.shape.device.description).toBe(
+      'Device name, or part of one, for switch_output/switch_input, compared as given (untrimmed). A name identical to it wins when one device of the requested type has it; otherwise the one name equal to it ignoring case, else the one name containing it ignoring case. Two or more such names fail as device_ambiguous.',
+    );
+  });
+
+  it('declares every reason as service-thrown, device_ambiguous as a ValidationError and switchaudio_unavailable naming every location searched', () => {
     expect(macosControlAudio.errors).toMatchObject([
       { reason: 'device_not_found', thrownBy: 'service' },
+      {
+        reason: 'device_ambiguous',
+        code: -32007,
+        recovery:
+          'Call again with the full name of one device, exactly as macos_control_audio action=list returns it. Devices that share one name cannot be told apart by name; choose between them in System Settings > Sound.',
+        thrownBy: 'service',
+      },
       {
         reason: 'switchaudio_unavailable',
         when: 'The SwitchAudioSource CLI is not on PATH or in either Homebrew bin directory (/opt/homebrew/bin, /usr/local/bin).',

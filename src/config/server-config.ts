@@ -10,7 +10,9 @@ const ServerConfigSchema = z.object({
   screenshotDir: z
     .string()
     .default('')
-    .describe('Default directory for screenshot files. Defaults to ~/Desktop when empty.'),
+    .describe(
+      'Default directory for screenshot files, and a directory a custom screenshot path may be written into besides /tmp and the home directory. Defaults to ~/Desktop when empty.',
+    ),
   displayLayouts: z
     .string()
     .default('{}')

@@ -26,7 +26,7 @@ const DeviceRefSchema = z.object({
 export const macosControlAudio = tool('macos_control_audio', {
   title: 'Control macOS Audio Routing',
   description:
-    'Manage audio device routing: list all input and output devices, get the current default input and output devices, or switch the default input or output device. Device names support case-insensitive partial matching — "MacBook" matches "MacBook Pro Microphone". Volume level control is separate (use macos_control_volume). Requires SwitchAudioSource CLI (brew install switchaudio-osx).',
+    'Manage audio device routing: list all input and output devices, get the current default input and output devices, or switch the default input or output device. A switch picks one device of the requested type by name: a name identical to device wins when one device has it; otherwise the one name equal to device ignoring case, else the one name containing it ignoring case — "webcam" picks "HD Pro Webcam C920". When two or more names fit, the switch fails as device_ambiguous, naming each, and changes nothing. Volume level control is separate (use macos_control_volume). Requires SwitchAudioSource CLI (brew install switchaudio-osx).',
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   input: withActionRequirements(
     z.object({
@@ -39,7 +39,7 @@ export const macosControlAudio = tool('macos_control_audio', {
         .string()
         .optional()
         .describe(
-          'Partial or full device name for switch_output/switch_input. Case-insensitive substring match.',
+          'Device name, or part of one, for switch_output/switch_input, compared as given (untrimmed). A name identical to it wins when one device of the requested type has it; otherwise the one name equal to it ignoring case, else the one name containing it ignoring case. Two or more such names fail as device_ambiguous.',
         ),
       type: z
         .enum(['input', 'output', 'all'])
@@ -76,8 +76,16 @@ export const macosControlAudio = tool('macos_control_audio', {
     {
       reason: 'device_not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'No audio device name matches the provided string.',
+      when: 'No device of the type the switch targets has a name containing device, ignoring case.',
       recovery: 'Call macos_control_audio with action=list to see every device and its exact name.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'device_ambiguous',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'device fits two or more devices of the type the switch targets: no name identical to it is held by exactly one device, and two or more names equal it ignoring case or, when none does, contain it ignoring case. Two devices sharing one name are always ambiguous. Nothing is switched.',
+      recovery:
+        'Call again with the full name of one device, exactly as macos_control_audio action=list returns it. Devices that share one name cannot be told apart by name; choose between them in System Settings > Sound.',
       thrownBy: 'service',
     },
     {

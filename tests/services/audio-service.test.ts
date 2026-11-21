@@ -181,6 +181,134 @@ describe('AudioService.switchDevice with no matching device', () => {
   });
 });
 
+describe('AudioService.switchDevice picks one device of the requested type by name', () => {
+  const HINT =
+    'Call again with the full name of one device, exactly as macos_control_audio action=list returns it. Devices that share one name cannot be told apart by name; choose between them in System Settings > Sound.';
+
+  /** A Continuity iPhone microphone, a webcam, and the built-in microphone, in SwitchAudioSource’s order. */
+  const INPUTS = [
+    'Alex’s iPhone 15 Pro Microphone',
+    'HD Pro Webcam C920',
+    'MacBook Pro Microphone',
+  ];
+
+  /** `-a -f json` listing `inputs` and `outputs`, inputs first, as SwitchAudioSource orders them. */
+  function listDevices(inputs: string[], outputs: string[] = ['MacBook Pro Speakers']): void {
+    const line = (type: string) => (name: string, i: number) =>
+      JSON.stringify({ name, type, id: `${type}-${i}`, uid: `${type}-uid-${i}` });
+    deviceLines = [...inputs.map(line('input')), ...outputs.map(line('output'))].join('\n');
+  }
+
+  /** The argv of every `-s` run: what was switched. */
+  const switches = () =>
+    execFileMock.mock.calls.map((c) => c[1]).filter((argv) => argv.includes('-s'));
+
+  it.each([
+    ['its exact name', 'MacBook Pro Microphone', 'MacBook Pro Microphone'],
+    ['its name in another case', 'macbook pro microphone', 'MacBook Pro Microphone'],
+    ['the one name containing it', 'Webcam', 'HD Pro Webcam C920'],
+    [
+      'the one input name containing it, past an output that contains it too',
+      'MacBook Pro',
+      'MacBook Pro Microphone',
+    ],
+  ])('switches by %s: %j → %j', async (_label, device, name) => {
+    listDevices(INPUTS);
+    await new AudioService().switchDevice(device, 'input', createMockContext());
+    expect(switches()).toEqual([['-s', name, '-t', 'input']]);
+  });
+
+  it('compares device untrimmed: " Speakers" is contained only by "MacBook Pro Speakers"', async () => {
+    listDevices([], ['MacBook Pro Speakers', 'Speakers']);
+    await new AudioService().switchDevice(' Speakers', 'output', createMockContext());
+    expect(switches()).toEqual([['-s', 'MacBook Pro Speakers', '-t', 'output']]);
+  });
+
+  it.each([
+    [
+      'an exact name over an earlier device whose name contains it',
+      ['MacBook Pro Speakers', 'Speakers'],
+      'Speakers',
+      'Speakers',
+    ],
+    [
+      'an exact name held by one device over an earlier one equal to it ignoring case',
+      ['Speakers', 'speakers'],
+      'speakers',
+      'speakers',
+    ],
+    [
+      'the one name equal to it ignoring case over an earlier name that contains it',
+      ['MacBook Pro Speakers', 'Speakers'],
+      'SPEAKERS',
+      'Speakers',
+    ],
+  ])('picks %s', async (_label, outputs, device, name) => {
+    listDevices([], outputs);
+    await new AudioService().switchDevice(device, 'output', createMockContext());
+    expect(switches()).toEqual([['-s', name, '-t', 'output']]);
+  });
+
+  it.each([
+    [
+      'two names contain it',
+      'input' as const,
+      INPUTS,
+      'Pro Microphone',
+      '"Pro Microphone" matches 2 input devices: "Alex’s iPhone 15 Pro Microphone", "MacBook Pro Microphone". The default input device is unchanged.',
+    ],
+    [
+      'two devices share its exact name',
+      'output' as const,
+      ['Speakers', 'Speakers'],
+      'Speakers',
+      '"Speakers" matches 2 output devices: "Speakers", "Speakers". The default output device is unchanged.',
+    ],
+    [
+      'two devices share its exact name and a third equals it ignoring case',
+      'output' as const,
+      ['Speakers', 'Speakers', 'speakers'],
+      'Speakers',
+      '"Speakers" matches 3 output devices: "Speakers", "Speakers", "speakers". The default output device is unchanged.',
+    ],
+    [
+      'two names equal it ignoring case, neither exactly, past a name that only contains it',
+      'output' as const,
+      ['MacBook Pro Speakers', 'Speakers', 'speakers'],
+      'SPEAKERS',
+      '"SPEAKERS" matches 2 output devices: "Speakers", "speakers". The default output device is unchanged.',
+    ],
+    [
+      'names holding quotes contain it',
+      'output' as const,
+      ['Desk "A"', 'Desk "B"\u0007'],
+      'desk',
+      '"desk" matches 2 output devices: "Desk \\"A\\"", "Desk \\"B\\"\\u0007". The default output device is unchanged.',
+    ],
+  ])(
+    'fails device_ambiguous naming each candidate, and switches nothing, when %s',
+    async (_label, type, names, device, message) => {
+      if (type === 'input') listDevices(names);
+      else listDevices([], names);
+      const err = await new AudioService()
+        .switchDevice(device, type, createMockContext())
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        code: -32007,
+        message,
+        data: { reason: 'device_ambiguous', recovery: { hint: HINT } },
+      });
+      expect(switches()).toEqual([]);
+    },
+  );
+
+  it('throws the recovery macos_control_audio declares for device_ambiguous', () => {
+    expect(macosControlAudio.errors?.find((e) => e.reason === 'device_ambiguous')?.recovery).toBe(
+      HINT,
+    );
+  });
+});
+
 describe('AudioService reads each -f json line as one device or skips it', () => {
   it('skips a line that is not JSON, names no device, or has a type other than input or output', async () => {
     deviceLines = [

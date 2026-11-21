@@ -13,7 +13,6 @@ import { delimiter, isAbsolute, join } from 'node:path';
 
 /** Absolute paths of the macOS system binaries the server runs. */
 export const SYSTEM_BINARIES = {
-  defaults: '/usr/bin/defaults',
   ifconfig: '/sbin/ifconfig',
   kill: '/bin/kill',
   networksetup: '/usr/sbin/networksetup',
