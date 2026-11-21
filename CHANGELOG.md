@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-11-21 · ⚠️ Breaking
+
+Adds Music list_playlists, Focus list and mode_name, display scale_factor, app_name on app list, and automation_system_events. Every screenshot target now checks Screen Recording, audio switches reject ambiguous device names, and macos_manage_apps list needs no permission.
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-29
 
 Adds macos_control_music for Music app playback, makes the lock screen-saver fallback run only when the keystroke is denied and report which method ran, and marks the destructive write tools with destructiveHint. Publishes a macos-guide skill and adopts mcp-ts-core 0.13.18.
